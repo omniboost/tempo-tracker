@@ -4,6 +4,11 @@ A macOS menu bar app that keeps track of what you work on, so you don't have to 
 
 It asks every 45 minutes whether you're still on the same ticket, notices branch switches, calls and breaks, and keeps everything locally. At the end of the day you check a day overview and send it to Tempo as worklogs. **Nothing goes to Tempo until you press *Send* and confirm.**
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
+  <img src="docs/images/overview-light.png" alt="The day overview: one line per ticket, with the totals and what's already in Tempo" width="948">
+</picture>
+
 ## Contents
 
 - [Install](#install)
@@ -20,13 +25,12 @@ It asks every 45 minutes whether you're still on the same ticket, notices branch
 
 - **macOS** (developed and tested on macOS 26).
 - **Python 3.10–3.14.** If you don't have it: `brew install python@3.13`.
-- **Access to this repo** through SSH (`ssh -T git@github.com` should greet you).
 - **A Jira API token** (read-only) and **a Tempo API token**. See [Create the tokens](#create-the-tokens).
 
 ### Steps
 
 ```bash
-git clone git@github.com:omniboost/tempo-tracker.git ~/Projects/tempo-tracker
+git clone https://github.com/omniboost/tempo-tracker.git ~/Projects/tempo-tracker
 cd ~/Projects/tempo-tracker
 ./install.sh
 ```
@@ -79,6 +83,11 @@ You don't need to know the keys up front. Leave them out (`Standup, Retro`), and
 
 ### The check-in
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/checkin-dark.png">
+  <img src="docs/images/checkin-light.png" alt="The check-in: still working on DEMO-12, 0:45 since 10:15" width="488">
+</picture>
+
 - **Yes** (Enter): the time since the last check-in goes to the current ticket.
 - **Plus something else…**: spent 15 minutes on something else? Pick the ticket and duration. That time comes out of the period and the rest stays on the current ticket. You can use it several times per check-in.
 - **Other ticket…**: you switched. Choose since when: by default the whole period since the last check-in moves to the new ticket, or only the last 5–30 minutes.
@@ -86,6 +95,11 @@ You don't need to know the keys up front. Leave them out (`Standup, Retro`), and
 - **Unanswered after 10 minutes**: if you were away, the time from the question onwards counts as away. If you were active but didn't see it, it counts as *Yes*.
 
 ### Calls and meetings
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/call-dark.png">
+  <img src="docs/images/call-light.png" alt="After a call: the fixed options on top, Standup suggested" width="648">
+</picture>
 
 - **During a call** (any app using a microphone: Teams, Zoom, Meet) there are no check-ins. Not typing during a call doesn't count as idle.
 - **After a call of 5 minutes or more**, you get a list:
@@ -99,6 +113,11 @@ You don't need to know the keys up front. Leave them out (`Standup, Retro`), and
 - **Meetings logged in Tempo itself** (e.g. from the calendar suggestions in your timesheet) are subtracted in the day overview, so nothing is counted twice.
 
 ### Switching tickets
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/switch-dark.png">
+  <img src="docs/images/switch-light.png" alt="Switch ticket: typing searches your tickets and Jira" width="648">
+</picture>
 
 - **Switch ticket…** in the menu, or **⌃⌥T** from anywhere. Search by key or title (text also searches Jira after a short pause), or type a key like `IN-1234`.
 - **Recent tickets** are listed right under *Switch ticket…* in the menu: one click switches.
@@ -114,6 +133,8 @@ You don't need to know the keys up front. Leave them out (`Standup, Retro`), and
 - **Laptop closed at the office and continuing at home?** Don't choose *Done for today*. You'll get *Welcome back* at home; choose *Break* for the travel time.
 
 ### The day overview
+
+The screenshot at the top of this page shows the day overview.
 
 - **One line per ticket**, with the tracked time rounded to 15 minutes. You can change:
   - the duration; a ✎ appears, and clicking it restores the tracked time;
@@ -142,7 +163,19 @@ You don't need to know the keys up front. Leave them out (`Standup, Retro`), and
 | Refresh Jira issues | Reload your assigned and recent issues. |
 | Settings… | All settings (see below). |
 
+*This week* and the Friday week check show your week:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/week-dark.png">
+  <img src="docs/images/week-light.png" alt="Your week: per day what's in Tempo and what still needs sending" width="508">
+</picture>
+
 ### Settings
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-dark.png">
+  <img src="docs/images/settings-light.png" alt="Settings" width="668">
+</picture>
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -292,6 +325,14 @@ Run the tests:
 
 - **No real windows.** The tests never open real windows: `tests/__init__.py` makes that fail loudly, runs progress cards inline, and pins the screen to "on" and the microphone to "off" so results don't depend on your Mac.
 - **No clock.** The tracker takes the time as an argument, so tests drive it with fixed timestamps.
+
+The screenshots in this README come from the real windows, filled with made-up data. After a UI change, make them again:
+
+```bash
+.venv/bin/python -m scripts.screenshots
+```
+
+This writes `docs/images/*-light.png` and `*-dark.png` without opening a window, and doesn't touch your own database, settings or Keychain.
 
 ## License
 

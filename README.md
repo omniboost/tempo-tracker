@@ -17,6 +17,7 @@ It asks every 45 minutes whether you're still on the same ticket, notices branch
 - [Privacy](#privacy)
 - [Files](#files)
 - [Update and uninstall](#update-and-uninstall)
+- [Releasing](#releasing)
 - [Development](#development)
 
 ## Install
@@ -24,10 +25,35 @@ It asks every 45 minutes whether you're still on the same ticket, notices branch
 ### What you need
 
 - **macOS** (developed and tested on macOS 26).
-- **Python 3.10–3.14.** If you don't have it: `brew install python@3.13`.
+- **[Homebrew](https://brew.sh).**
 - **A Jira API token** (read-only) and **a Tempo API token**. See [Create the tokens](#create-the-tokens).
 
 ### Steps
+
+```bash
+brew tap omniboost/tap
+brew install tempo-tracker
+brew services start tempo-tracker
+```
+
+You only need `brew tap` once. Homebrew installs Python 3.13 and the dependencies in their own virtualenv, and `brew services` starts the app now and every time you log in.
+
+A ⏱ appears in your menu bar. On first start the app asks for your settings: Jira site, email and the two tokens.
+
+### Moving from install.sh to Homebrew
+
+Installed it before with `install.sh`? Stop that copy first, or two will run. Your tokens and tracked time stay.
+
+```bash
+launchctl bootout gui/$(id -u)/io.omniboost.tempo-tracker
+rm ~/Library/LaunchAgents/io.omniboost.tempo-tracker.plist
+```
+
+Then follow the steps above. The first time, macOS may ask whether Python may use the `tempo-tracker` items in your Keychain: choose **Always Allow**.
+
+### From source
+
+For development, or without Homebrew: Python 3.10–3.14 and
 
 ```bash
 git clone https://github.com/omniboost/tempo-tracker.git ~/Projects/tempo-tracker
@@ -40,8 +66,6 @@ cd ~/Projects/tempo-tracker
 2. creates a virtualenv in `.venv`;
 3. installs `requirements.txt` from the public PyPI;
 4. installs a LaunchAgent (`io.omniboost.tempo-tracker`), so the app starts now and every time you log in.
-
-A ⏱ appears in your menu bar. On first start the app asks for your settings: Jira site, email and the two tokens.
 
 ### Create the tokens
 
@@ -287,33 +311,42 @@ Jira scoped tokens only work through `api.atlassian.com`. The client finds out o
 | Tracked time | `~/Library/Application Support/TempoTracker/tracker.db` |
 | Log | `~/Library/Logs/TempoTracker.log` |
 | Tokens | macOS Keychain, service `tempo-tracker` |
-| LaunchAgent | `~/Library/LaunchAgents/io.omniboost.tempo-tracker.plist` |
+| LaunchAgent | Homebrew: `~/Library/LaunchAgents/sh.brew.tempo-tracker.plist` · from source: `~/Library/LaunchAgents/io.omniboost.tempo-tracker.plist` |
 
 Days that are completely sent to Tempo are removed from `tracker.db` after 35 days. Days with anything not sent are kept. The database stays well under 1 MB.
 
 ## Update and uninstall
 
-Update:
+With Homebrew:
 
 ```bash
-cd ~/Projects/tempo-tracker
-git pull
-./install.sh
+brew upgrade tempo-tracker
+brew services restart tempo-tracker
 ```
 
-Restart without reinstalling:
+Homebrew doesn't restart the app by itself, so the restart is needed to run the new version.
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/io.omniboost.tempo-tracker
+brew services stop tempo-tracker
+brew uninstall tempo-tracker
 ```
 
-Uninstall:
+From source: update with `git pull && ./install.sh`, restart with `launchctl kickstart -k gui/$(id -u)/io.omniboost.tempo-tracker`, and uninstall with `./uninstall.sh` (this also removes the tokens from the Keychain).
 
-```bash
-./uninstall.sh
-```
+Either way, your tracked time stays in `~/Library/Application Support/TempoTracker`; delete that folder yourself if you no longer need it.
 
-This removes the LaunchAgent and the tokens. Your tracked time stays in `~/Library/Application Support/TempoTracker`; delete that folder yourself if you no longer need it.
+## Releasing
+
+1. Merge the changes into `master` through a pull request; the tests run on every pull request.
+2. Tag the release (only repository admins can create `v*` tags):
+   ```bash
+   git tag -a v0.2.0 -m "..." && git push origin v0.2.0
+   ```
+3. Update the formula in [omniboost/homebrew-tap](https://github.com/omniboost/homebrew-tap). This opens a pull request there with the new version and checksum:
+   ```bash
+   brew bump --open-pr tempo-tracker
+   ```
+4. Merge that pull request once its tests pass. Colleagues then get the new version with `brew upgrade tempo-tracker`.
 
 ## Development
 

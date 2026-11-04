@@ -164,14 +164,44 @@ The screenshot at the top of this page shows the day overview.
   - the duration; a ✎ appears, and clicking it restores the tracked time;
   - the description;
   - the Jira key, for fixed options.
-- **Removing and adding**: remove a line with ✕, or add a line for something that wasn't tracked.
+- **Removing**: remove a line with ✕; another click brings it back.
 - **Descriptions** come from your commit messages of that day when they mention the ticket (`feat(IN-42): add tips` → `Add tips`). Otherwise the issue title is used. Your own text always wins.
-- **Totals at the bottom**: what's in Tempo plus what you're about to send, against your hours per day. For example: `In Tempo 1:15 + to send 5:45 = 7:00 of 8:00 · 1:00 missing`.
+- **Totals at the top**: what's in Tempo plus what you're about to send, against your hours per day. For example: `In Tempo 1:15 + to send 5:45 = 7:00 of 8:00 · 1:00 missing`.
 - **Save** keeps your edits for later. **Send to Tempo** shows a summary first and only sends after you confirm. Sending runs in the background with a progress card.
 - **After sending today**:
   - **Done for today** stops tracking until your next work day;
   - **Pause** is for a break, with *Resume* in the menu;
   - **Keep tracking** carries on.
+
+#### Adding time
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/add-dark.png">
+  <img src="docs/images/add-light.png" alt="Adding time from the search field at the top of the day overview" width="948">
+</picture>
+
+The field at the top adds time for something that wasn't tracked.
+
+1. Type a key or part of a title. Suggestions show your recent and assigned tickets and your fixed options; from 3 characters on, Jira is searched too. Pick one with the arrow keys.
+2. **at** is the start time. It's filled with the first free time where the duration fits, or right after your last block. Change it if you like (`14:30`, `1430` or `14`).
+3. Enter a duration (`0:30`, `30m`, `1h`) and press Enter. Tab moves between the fields.
+
+The time goes onto that ticket's line, or a new line if the ticket isn't in the list yet. A start time that overlaps tracked time or something in Tempo is refused with a message, so nothing is counted twice. Added time is saved as tracked time at that moment when you press *Save*, or after you confirm *Send*; *Cancel* drops it.
+
+#### List and Calendar
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/calendar-dark.png">
+  <img src="docs/images/calendar-light.png" alt="The Calendar view: the day as a timeline, with a gap that wasn't tracked" width="948">
+</picture>
+
+The switch above the lines shows your day as a timeline instead. The overview opens in the view you used last.
+
+- **One dot per block**, in time order: blue is tracked and still to send, purple is already in Tempo. Pieces of the same ticket right after each other are one block.
+- **Gaps**: 10 minutes or more between your first and last block with nothing tracked and nothing in Tempo. Click one to fill the field at the top with its start time and length, then pick a ticket.
+- **Added, not saved yet**: a block with a dashed border.
+- **Now**: on today, an orange dot marks the current time.
+- **Open in Jira**: click a ticket's block to open it in your browser. In the List view, the ↗ button next to a ticket does the same.
 
 ### The menu
 
@@ -210,6 +240,7 @@ The screenshot at the top of this page shows the day overview.
 | Work days | `mon-fri` | e.g. `mon-thu` or `mon, tue, thu`. |
 | Day overview at | 18:00 | When the day overview opens by itself. |
 | Round to (min) | 15 | Rounding in the day overview; 0 = off. |
+| Tempo worklogs | `ticket` | `ticket`: one worklog per ticket per day. `period`: one per tracked period, so Tempo shows your day as it was. |
 | Hours per day | 8:00 | For the totals and the week; empty = don't show. |
 | Week check | `fri 15:00` | Weekly summary; empty = off. |
 | Ask about calls from (min) | 5 | Shorter calls stay on your ticket; 0 = never ask. |
@@ -230,6 +261,7 @@ A Python app on top of [rumps](https://github.com/jaredks/rumps) (menu bar) and 
 | `tracker.py` | Time tracking as a state machine, without UI or clock, so it's fully testable. |
 | `store.py` | SQLite: time segments, sent worklogs, drafts, cached Jira issues, state. |
 | `summary.py` | Builds the day overview: per ticket, rounded, minus what's already in Tempo. |
+| `timeline.py` | The day as a timeline: blocks, gaps, the first free time, and splitting a ticket into one worklog per period. |
 | `week.py` | Week overview, days that need attention, work days, the week check. |
 | `meetings.py` | The rule that suggests which meeting a call was. |
 | `calls.py` | Is a microphone in use? (CoreAudio) |
@@ -271,10 +303,20 @@ Every 15 seconds `on_tick` does the following, in order:
 1. You press *Send* and confirm the summary.
 2. In a background thread, the app:
    - looks up all Jira issue ids in one search (`key in (…)`);
-   - creates one Tempo worklog per line (`POST /4/worklogs`), starting at the first tracked moment of that ticket.
+   - creates the Tempo worklogs (`POST /4/worklogs`). With *Tempo worklogs* set to `ticket`, that's one per line, starting at the first tracked moment of that ticket. With `period`, each tracked period of a ticket is its own worklog at its own start time (see below).
 
    A progress card shows *"3 of 7 · IN-3224 1:30"* and the app keeps responding.
 3. Back on the main thread, sent segments are marked with their worklog. Failed lines stay as drafts, so you can retry.
+
+Splitting into periods (`timeline.split`):
+
+1. Pieces of the same ticket less than a minute apart become one period.
+2. Overlap with worklogs already in Tempo, such as a meeting, is cut out.
+3. Periods shorter than 5 minutes join the nearest period of that ticket.
+4. The difference with the duration on the line (rounding, or a time you changed) goes on the last period; less comes off the last one first.
+5. Each period is whole minutes; the last one makes the total exact.
+
+If only some periods of a ticket get through, the ones that did are recorded and the rest stays open as a draft, so nothing is sent twice.
 
 ### The meeting suggestion
 

@@ -31,6 +31,7 @@ from tempo_tracker import dialogs, ui
 from tempo_tracker.config import Config
 from tempo_tracker.dialogs import PickItem, WeekRow
 from tempo_tracker.icon import app_icon
+from tempo_tracker.store import CachedIssue
 from tempo_tracker.tempo import TempoWorklog
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "images"
@@ -133,6 +134,38 @@ def _type_in_picker(text: str, from_jira: list[PickItem]):
     return prepare
 
 
+def _find(view, identifier: str):
+    if view.identifier() == identifier:
+        return view
+    for child in view.subviews():
+        found = _find(child, identifier)
+        if found is not None:
+            return found
+    return None
+
+
+def _show_calendar(window) -> None:
+    """Switch the day overview to 'Calendar', like a click on the switch."""
+    switch = _find(window.contentView(), "view-switch")
+    switch.setSelectedSegment_(1)
+    switch.target().switch_(switch)
+
+
+def _type_in_quick_add(text: str, from_jira: list[PickItem], duration: str):
+    """Type `text` in the search field at the top of the day overview, with `from_jira` as the search results from Jira."""
+
+    def prepare(window) -> None:
+        search = _find(window.contentView(), "quick-add")
+        controller = search.delegate()
+        search.setStringValue_(text)
+        controller.extra_field.setStringValue_(duration)
+        controller.remote_items = from_jira
+        controller.apply_filter(text)
+        controller.on_text()
+
+    return prepare
+
+
 def make_app(tmp: str):
     """De echte app met een tijdelijke database, demo-instellingen en nep-Jira/Tempo (geen netwerk)."""
     config = Config(
@@ -160,6 +193,10 @@ def make_app(tmp: str):
     app._commit_descriptions = lambda day: {"DEMO-12": "Split bills per guest; Show the split on the receipt"}
 
     store = app.store
+    store.replace_issues("assigned", [
+        CachedIssue("DEMO-27", "27", "Export invoices as PDF", "assigned"),
+        CachedIssue("DEMO-44", "44", "Refund failed payments", "assigned"),
+    ])
     store.add_segment("DEMO-12", "DEMO-12 · Split bills per guest", at(9), at(9, 30))
     store.add_segment("@Standup", "Standup", at(9, 30), at(9, 45))
     store.add_segment("DEMO-12", "DEMO-12 · Split bills per guest", at(9, 45), at(12, 15))
@@ -210,6 +247,10 @@ def main() -> None:
         app, patches = make_app(tmp)
         try:
             shoot("overview", lambda: app._overview(DAY, False))
+            shoot("add", lambda: app._overview(DAY, False), _type_in_quick_add("refund", [
+                PickItem("DEMO-58", "DEMO-58 · Refund split bills", "Jira"),
+            ], "0:30"))
+            shoot("calendar", lambda: app._overview(DAY, False), _show_calendar)  # last: the app remembers this view
             shoot("settings", app._settings)
         finally:
             for patch in patches:

@@ -33,6 +33,7 @@ class Config:
     idle_minutes: int = 10
     end_of_day: str = "18:00"
     round_minutes: int = 15
+    worklog_split: str = "ticket"  # ticket = one worklog per ticket per day; period = one per tracked period
     fixed_options: list[dict] = field(default_factory=default_fixed_options)
     git_folders: str = "~/Projects"  # komma-gescheiden; leeg = geen git
     branch_switch: str = "ask"  # ask | auto | off
@@ -68,6 +69,14 @@ def normalize_site(value: str) -> str:
     if site and "." not in site:
         site = f"{site}.atlassian.net"
     return site
+
+
+def issue_url(site: str, key: str) -> str | None:
+    """The ticket's page in Jira, or None without a site or a valid key (like a fixed option such as '@Standup')."""
+    key = key.strip()
+    if not site or not ISSUE_KEY_RE.match(key):
+        return None
+    return f"https://{site}/browse/{key}"
 
 
 def parse_clock(value: str) -> tuple[int, int]:

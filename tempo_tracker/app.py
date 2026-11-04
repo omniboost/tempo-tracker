@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Callable
 
 import rumps
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
@@ -36,8 +37,9 @@ from .idle import idle_seconds, screen_off
 from .jira import JiraClient, JiraError
 from .meetings import LOOKBACK_SECONDS, MEETING_MAX_SECONDS, suggest
 from .store import CachedIssue, Store, day_of, today
-from .summary import build_overview, default_description, format_duration, parse_duration
+from .summary import build_overview, default_description, format_duration, parse_duration, round_seconds
 from .tempo import TempoClient, TempoError
+from .timeline import TEMPO, TRACKED, Block, merge, split
 from .week import WORK_DAYS, DaySummary, attention, format_work_days, parse_reminder, parse_work_days, reminder_moment, visible, week_days
 from .tracker import AWAY, PAUSED, TRACKING, Activity, CameBack, CheckinDue, DayStart, EndOfDay, Tracker
 
@@ -49,11 +51,11 @@ REPO_SCAN_SECONDS = 10 * 60
 WEEK_REFRESH_SECONDS = 15 * 60
 WEEK_SNOOZE_SECONDS = 60 * 60
 BRANCH_MODES = ("ask", "auto", "off")
+SPLIT_MODES = ("ticket", "period")
 SNOOZE_SECONDS = 15 * 60
 SINCE_CHOICES = (("Now", 0), ("5m ago", 5), ("10m", 10), ("15m", 15), ("30m", 30))
 RECENT_IN_MENU = 5
 PAUSE_ITEM = PickItem("", "Break / private (don't log)", "")
-EMPTY_OVERVIEW_LINES = 2
 SENT_DONE, SENT_PAUSE, SENT_KEEP = range(3)
 KEEP_SENT_DAYS = 35  # helemaal verstuurde dagen daarna wissen (ze staan in Tempo); het leren kijkt 4 weken terug
 
@@ -911,7 +913,7 @@ class TempoTrackerApp(rumps.App):
     def _overview(self, day: str, end_of_day: bool) -> None:
         if day == today():
             self.tracker.flush(time.time())
-        booked, booked_text, in_tempo, chips = self._tempo_bookings(day)
+        booked, booked_text, in_tempo, chips, tempo_blocks = self._tempo_bookings(day)
         title = datetime.strptime(day, "%Y-%m-%d").strftime("%A %-d %B")
         rows = build_overview(self.store, self.config, day, booked)
         from_commits = self._commit_descriptions(day)
@@ -935,7 +937,7 @@ class TempoTrackerApp(rumps.App):
                 auto_duration=format_duration(row.auto_seconds) if row.edited else "",
             )
             for row in rows
-        ] + [OverviewLine("", "", "", "", True, "", "") for _ in range(EMPTY_OVERVIEW_LINES)]
+        ]
         first_started = {row.issue_key: row.first_started_at for row in rows}
         tracked = {row.issue_key: row.tracked_seconds for row in rows}
         auto = {row.issue_key: row.auto_seconds for row in rows if row.first_started_at is not None}
@@ -947,24 +949,78 @@ class TempoTrackerApp(rumps.App):
             if sent:
                 notes.append(f"already sent {format_duration(sent)}")
             intro = " · ".join(notes) + ("\n" + booked_text if booked_text else "")
+            # A fixed option ('@Support Work') opens the Jira key you set for it in the list.
+            jira_keys = {line.issue_key: line.target_key for line in lines if line.target_key_editable}
+            blocks = merge(
+                [Block(start, end, key, label, TRACKED, jira_key=jira_keys.get(key, "")) for key, label, start, end in self.store.segments(day)]
+                + tempo_blocks
+            ) + [
+                Block(start, end, line.issue_key, line.label, TRACKED, pending=True, jira_key=line.target_key)
+                for line in lines for start, end in line.periods
+            ]
             action, lines = dialogs.overview(
-                title, intro, lines, totals=lambda entries: self._totals(entries, in_tempo), chips=chips
+                title, intro, lines, totals=lambda entries: self._totals(entries, in_tempo), chips=chips,
+                day=day, blocks=blocks, pick_ticket=self._pick_ticket,
+                items=self._pick_items(), remote=self._search_jira, new_line=lambda item, duration: self._new_line(item, duration, from_commits),
+                view=self.store.get_state("overview_view", "list"), on_view=lambda name: self.store.set_state("overview_view", name),
+                jira_site=self.config.jira_site,
             )
             if action is None:
                 return
+            # Filled gaps count as tracked time; they are only stored on Save or after 'Send'.
+            filled_tracked, filled_first, filled_auto = self._with_filled_gaps(lines, tracked, first_started, auto)
             try:
-                parsed = self._parse_lines(lines, first_started, tracked, require_keys=action == "send", auto=auto)
+                parsed = self._parse_lines(lines, filled_first, filled_tracked, require_keys=action == "send", auto=filled_auto)
             except ValueError as error:
                 dialogs.message("Check the overview", str(error))
                 continue
             self._remember_fixed_keys(parsed)
             if action == "save":
+                self._store_filled_gaps(lines)
                 self._save_drafts(day, parsed)
                 return
-            result = self._send(day, parsed)
+            pending = {line.issue_key: list(line.periods) for line in lines if line.periods and not line.removed}
+            result = self._send(day, parsed, before_send=lambda: self._store_filled_gaps(lines), booked=booked, pending=pending)
             if result == "back":
                 continue
             return
+
+    def _new_line(self, item: PickItem, duration: str, from_commits: dict[str, str]) -> OverviewLine:
+        """Line for a ticket you add at the top of the day overview that wasn't in the list yet."""
+        if item.key.startswith("@"):
+            label = item.label
+            return OverviewLine(item.key, label, "", self.config.fixed_issue_key(label), True, duration, "", label)
+        label = item.key if item.hint == "manual" else item.label  # "IN-5 · look up in Jira" is not a title
+        placeholder = from_commits.get(item.key) or default_description(item.key, label)
+        return OverviewLine(item.key, label, "", item.key, False, duration, "", placeholder)
+
+    def _with_filled_gaps(self, lines: list[OverviewLine], tracked: dict, first_started: dict, auto: dict) -> tuple[dict, dict, dict]:
+        """Tracked time, start time and rounded time per ticket, including the filled gaps (calculation only)."""
+        tracked, first_started, auto = dict(tracked), dict(first_started), dict(auto)
+        for line in lines:
+            if line.removed or not line.periods:
+                continue
+            key = line.issue_key
+            tracked[key] = tracked.get(key, 0) + int(sum(end - start for start, end in line.periods))
+            first_started[key] = min([start for start, _ in line.periods] + ([first_started[key]] if first_started.get(key) else []))
+            auto[key] = round_seconds(tracked[key], self.config.round_minutes)
+        return tracked, first_started, auto
+
+    def _store_filled_gaps(self, lines: list[OverviewLine]) -> None:
+        """Store the gaps you filled in the day overview as tracked time."""
+        for line in lines:
+            if line.removed:
+                continue
+            for start, end in line.periods:
+                self.store.add_segment(line.issue_key, line.label, start, end)
+                log.info("Filled a gap of %s with %s", format_duration(int(end - start)), line.issue_key)
+
+    def _pick_ticket(self, label: str) -> str | None:
+        """From the day overview: search a Jira ticket for a line (fixed options don't belong there)."""
+        items = [item for item in self._pick_items() if not item.key.startswith("@")]
+        title = f"Ticket for {label}" if label else "Pick a ticket"
+        item, _ = dialogs.pick(title, "The key goes into the line; nothing is sent yet.", items, remote=self._search_jira)
+        return item.key if item else None
 
     def _totals_text(self, entries: list[tuple[str, bool]], in_tempo: int | None) -> str:
         return self._totals(entries, in_tempo)[0]
@@ -994,14 +1050,16 @@ class TempoTrackerApp(rumps.App):
                 text += "complete ✓"
         return text, in_tempo, to_send, target
 
-    def _tempo_bookings(self, day: str) -> tuple[list[tuple[float, float]], str, int | None, list[str]]:
-        """Worklogs die al in Tempo staan.
+    def _tempo_bookings(self, day: str) -> tuple[list[tuple[float, float]], str, int | None, list[str], list[Block]]:
+        """Worklogs that are already in Tempo.
 
-        Geeft terug: de periodes die je zelf in Tempo zette (bijv. een meeting uit de suggesties; die gaan af
-        van je getrackte tijd), een tekst voor in het overzicht, en het totaal in Tempo (None = niet te lezen).
-        Alleen lezen; als Tempo niet bereikbaar is, wordt er niets afgetrokken.
+        Returns: the periods you logged in Tempo yourself (e.g. a meeting from the suggestions; those are
+        subtracted from your tracked time), a text for the overview, the total in Tempo (None = unreadable), the
+        chips and all worklogs as blocks for the calendar. Read-only; if Tempo can't be reached, nothing is
+        subtracted.
         """
-        own = self.store.own_worklog_ids()
+        own_keys = self.store.own_worklog_keys()
+        own = set(own_keys)
 
         def read(_report) -> tuple[str, list, dict[str, str]]:
             """Op de achtergrond: worklogs van die dag en de Jira-keys van wat je niet via deze app verstuurde."""
@@ -1015,12 +1073,17 @@ class TempoTrackerApp(rumps.App):
             account_id, worklogs, keys = dialogs.progress("Day overview", "Reading your worklogs from Tempo…", read)
         except (JiraError, TempoError) as error:
             log.warning("Reading worklogs from Tempo failed: %s", error)
-            return [], f"Couldn't read your worklogs from Tempo ({error}). Nothing was subtracted.", None, []
+            return [], f"Couldn't read your worklogs from Tempo ({error}). Nothing was subtracted.", None, [], []
         self.store.set_state("account_id", account_id)
         in_tempo = sum(w.seconds for w in worklogs)
+        blocks = []
+        for worklog, (start, end) in zip(sorted(worklogs, key=lambda w: w.start_time), self._booked_periods(day, worklogs)):
+            key = own_keys.get(worklog.worklog_id) or keys.get(worklog.issue_id, "?")
+            description = worklog.description.split(" [")[0].strip(" -_")
+            blocks.append(Block(start, end, key, f"{key} · {description}" if description else key, TEMPO))
         external = [w for w in worklogs if w.worklog_id not in own]
         if not external:
-            return [], "", in_tempo, []
+            return [], "", in_tempo, [], blocks
 
         periods, chips = self._booked_periods(day, external), []
         for worklog, (start, end) in zip(sorted(external, key=lambda w: w.start_time), periods):
@@ -1029,7 +1092,7 @@ class TempoTrackerApp(rumps.App):
             chips.append(f"{hhmm(start)}–{hhmm(end)}  {key}  {description}  {format_duration(worklog.seconds)}".replace("    ", "  "))
         if len(chips) > 9:
             chips = chips[:8] + [f"+ {len(chips) - 8} more"]
-        return periods, "Meetings already in Tempo are subtracted from your tickets.", in_tempo, chips
+        return periods, "Meetings already in Tempo are subtracted from your tickets.", in_tempo, chips, blocks
 
     @staticmethod
     def _booked_periods(day: str, worklogs: list) -> list[tuple[float, float]]:
@@ -1118,53 +1181,74 @@ class TempoTrackerApp(rumps.App):
             else:
                 self.store.save_draft(day, line.issue_key, line.label, line.seconds, line.tracked_seconds, line.description)
 
-    def _send(self, day: str, lines: list[_Line]) -> str:
-        """Verstuurt regel voor regel; mislukte regels blijven als concept staan. Geeft 'sent', 'back' of 'failed'."""
+    def _send(
+        self, day: str, lines: list[_Line], before_send: Callable[[], None] | None = None,
+        booked: list[tuple[float, float]] = (), pending: dict[str, list[tuple[float, float]]] | None = None,
+    ) -> str:
+        """Sends line by line; failed lines stay a draft. Returns 'sent', 'back' or 'failed'.
+
+        `before_send` runs after you confirm, right before sending (e.g. to store filled gaps). With the setting
+        'period', every tracked period becomes its own worklog; `booked` (what is already in Tempo) is subtracted
+        from it. `pending` are filled gaps that before_send stores; they already count in the question.
+        """
         to_send = [line for line in lines if line.seconds > 0]
         to_discard = [line for line in lines if line.seconds == 0]
         total = sum(line.seconds for line in to_send)
-        summary = "\n".join(f"• {line.target_key}  {format_duration(line.seconds)}  {line.label}" for line in to_send)
         if not to_send and not to_discard:
             return "sent"
+        per_period = self.config.worklog_split == "period"
+        # A first split for the question; again after before_send (filled gaps), for the actual sending.
+        pending = pending or {}
+        counts = {line.issue_key: len(self._parts(day, line, booked, pending.get(line.issue_key, []))) for line in to_send}
+        worklog_count = sum(counts.values())
+        summary = "\n".join(
+            f"• {line.target_key}  {format_duration(line.seconds)}  {line.label}"
+            + (f"  ({counts[line.issue_key]} periods)" if counts[line.issue_key] > 1 else "")
+            for line in to_send
+        )
+        mode = "\n\nOne worklog per tracked period · change this in Settings." if per_period and to_send else ""
         if dialogs.choose(
-            f"Send {len(to_send)} worklogs ({format_duration(total)}) to Tempo?",
+            f"Send {worklog_count} worklogs ({format_duration(total)}) to Tempo?",
             (summary or "Nothing will be sent.")
-            + (f"\n\n{len(to_discard)} line(s) will be removed." if to_discard else ""),
+            + (f"\n\n{len(to_discard)} line(s) will be removed." if to_discard else "")
+            + mode,
             ["Send", "Back"],
         ) != 0:
             return "back"
+        if before_send:
+            before_send()
 
         jobs = [
-            (
-                line,
-                line.description or line.default_description or default_description(line.issue_key, line.label),
-                datetime.fromtimestamp(line.first_started_at).strftime("%H:%M:%S") if line.first_started_at else "09:00:00",
-            )
+            (line, line.description or line.default_description or default_description(line.issue_key, line.label), self._parts(day, line, booked))
             for line in to_send
         ]
+        worklog_count = sum(len(parts) for _, _, parts in jobs)
 
-        def work(report) -> tuple[str, list[tuple[_Line, str, str | None, str | None]]]:
-            """Op de achtergrond: per regel (regel, omschrijving, Tempo-id of None, fout of None)."""
+        def work(report) -> tuple[str, list[tuple[_Line, str, list[tuple[int, str | None, str | None]]]]]:
+            """In the background: per line (line, description, per part (seconds, Tempo id or None, error or None))."""
             account_id = jira.myself()
             issues = jira.issues([line.target_key for line, _, _ in jobs])
-            results = []
-            for number, (line, description, start) in enumerate(jobs, 1):
-                report(f"{number} of {len(jobs)} · {line.target_key}  {format_duration(line.seconds)}")
+            results, number = [], 0
+            for line, description, parts in jobs:
                 issue = issues.get(line.target_key)
-                if issue is None:
-                    results.append((line, description, None, "not found in Jira"))
-                    continue
-                try:
-                    worklog_id = tempo.create_worklog(issue.issue_id, account_id, day, start, line.seconds, description)
-                    results.append((line, description, worklog_id, None))
-                except TempoError as error:
-                    results.append((line, description, None, str(error)))
+                outcomes = []
+                for start, seconds in parts:
+                    number += 1
+                    report(f"{number} of {worklog_count} · {line.target_key}  {format_duration(seconds)}")
+                    if issue is None:
+                        outcomes.append((seconds, None, "not found in Jira"))
+                        continue
+                    try:
+                        outcomes.append((seconds, tempo.create_worklog(issue.issue_id, account_id, day, start, seconds, description), None))
+                    except TempoError as error:
+                        outcomes.append((seconds, None, str(error)))
+                results.append((line, description, outcomes))
             return account_id, results
 
         try:
             jira, tempo = self._jira(), self._tempo()
             account_id, results = dialogs.progress(
-                "Sending to Tempo", f"0 of {len(jobs)}…" if jobs else "Removing lines…", work
+                "Sending to Tempo", f"0 of {worklog_count}…" if jobs else "Removing lines…", work
             )
         except (JiraError, TempoError) as error:
             dialogs.message("Sending failed", str(error))
@@ -1173,13 +1257,22 @@ class TempoTrackerApp(rumps.App):
         self.store.set_state("account_id", account_id)
 
         failures = []
-        for line, description, worklog_id, error in results:
-            if worklog_id:
-                self.store.record_worklog(day, line.issue_key, line.seconds, description, worklog_id)
-            else:
-                log.warning("Worklog for %s failed: %s", line.target_key, error)
-                failures.append(f"{line.target_key}: {error}")
+        for line, description, outcomes in results:
+            sent = [(seconds, description, worklog_id) for seconds, worklog_id, _ in outcomes if worklog_id]
+            errors = [(seconds, error) for seconds, worklog_id, error in outcomes if not worklog_id]
+            if not errors and len(sent) == 1:
+                self.store.record_worklog(day, line.issue_key, sent[0][0], description, sent[0][2])
+            elif not sent:
+                log.warning("Worklog for %s failed: %s", line.target_key, errors[0][1])
+                failures.append(f"{line.target_key}: {errors[0][1]}")
                 self.store.save_draft(day, line.issue_key, line.label, line.seconds, line.tracked_seconds, line.description)
+            else:
+                # Partly sent: what is in Tempo is recorded, the rest stays a draft (nothing twice).
+                open_seconds = sum(seconds for seconds, _ in errors)
+                self.store.record_worklogs(day, line.issue_key, line.label, sent, open_seconds, line.description)
+                if errors:
+                    log.warning("%d of %d worklogs for %s failed: %s", len(errors), len(outcomes), line.target_key, errors[0][1])
+                    failures.append(f"{line.target_key}: {format_duration(open_seconds)} not sent ({errors[0][1]})")
         for line in to_discard:
             self.store.discard_unsent(day, line.issue_key)
 
@@ -1187,8 +1280,22 @@ class TempoTrackerApp(rumps.App):
             dialogs.message("Not everything was sent", "These lines are still open:\n" + "\n".join(failures))
             return "failed"
         self._last_week_refresh = 0.0  # meteen de nieuwe stand uit Tempo lezen
-        self._after_sent(day, f"{len(to_send)} worklogs, {format_duration(total)}.")
+        self._after_sent(day, f"{worklog_count} worklogs, {format_duration(total)}.")
         return "sent"
+
+    def _parts(
+        self, day: str, line: _Line, booked: list[tuple[float, float]], extra: list[tuple[float, float]] = ()
+    ) -> list[tuple[str, int]]:
+        """Worklogs for one line: (start time 'HH:MM:SS', seconds). One per ticket, or one per tracked period.
+
+        `extra`: periods that aren't stored yet but do count (filled gaps, for the question beforehand).
+        """
+        if self.config.worklog_split == "period":
+            periods = split(self.store.unsent_segments(day, line.issue_key) + list(extra), list(booked), line.seconds)
+            if periods:
+                return [(datetime.fromtimestamp(start).strftime("%H:%M:%S"), seconds) for start, seconds in periods]
+        start = datetime.fromtimestamp(line.first_started_at).strftime("%H:%M:%S") if line.first_started_at else "09:00:00"
+        return [(start, line.seconds)]
 
     def _after_sent(self, day: str, text: str) -> None:
         """Verstuurd. Liep de tracking vandaag nog: klaar voor vandaag (Enter), pauze, of gewoon doorgaan."""
@@ -1220,6 +1327,7 @@ class TempoTrackerApp(rumps.App):
             "idle_minutes": str(config.idle_minutes),
             "end_of_day": config.end_of_day,
             "round_minutes": str(config.round_minutes),
+            "worklog_split": config.worklog_split,
             "fixed_options": format_fixed_options(config.fixed_options),
             "git_folders": config.git_folders,
             "branch_switch": config.branch_switch,
@@ -1256,6 +1364,7 @@ class TempoTrackerApp(rumps.App):
                     FormField("work_days", "Work days", values["work_days"], "mon-fri"),
                     FormField("end_of_day", "Day overview at", values["end_of_day"], "18:00"),
                     FormField("round_minutes", "Round to (min)", values["round_minutes"], "15 · 0 = off"),
+                    FormField("worklog_split", "Tempo worklogs", values["worklog_split"], "ticket (one per day) or period"),
                     FormField("day_target", "Hours per day", values["day_target"], "8:00 · empty = don't show"),
                     FormField("week_reminder", "Week check", values["week_reminder"], "fri 15:00 · empty = off"),
                     FormField("call_min_minutes", "Ask about calls from (min)", values["call_min_minutes"], "5 · 0 = off"),
@@ -1317,6 +1426,9 @@ class TempoTrackerApp(rumps.App):
         branch_switch = values["branch_switch"].strip().lower()
         if branch_switch not in BRANCH_MODES:
             raise ValueError("On branch switch: enter ask, auto or off")
+        worklog_split = values["worklog_split"].strip().lower()
+        if worklog_split not in SPLIT_MODES:
+            raise ValueError("Tempo worklogs: enter ticket (one worklog per ticket per day) or period (one per tracked period)")
         git_folders = ", ".join(f.strip() for f in values["git_folders"].split(",") if f.strip())
         for folder in git_folders.split(", ") if git_folders else []:
             if not os.path.isdir(os.path.expanduser(folder)):
@@ -1334,6 +1446,7 @@ class TempoTrackerApp(rumps.App):
         self.config.fixed_options = parse_fixed_options(values["fixed_options"])
         self.config.git_folders = git_folders
         self.config.branch_switch = branch_switch
+        self.config.worklog_split = worklog_split
         self.config.shortcut = shortcut
         self.config.day_target = day_target
         self.config.week_reminder = week_reminder

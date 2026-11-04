@@ -139,6 +139,39 @@ def ticket_text(text: str, size: float = 13, weight=NSFontWeightRegular, key_col
     return result
 
 
+def split_ticket(text: str) -> tuple[str, str]:
+    """'IN-123 · Titel' -> ('Titel', 'IN-123'); text without a key -> (text, '')."""
+    key, sep, summary = text.partition(" · ")
+    if sep and key and key[0].isalpha() and "-" in key:
+        return summary, key
+    return text, ""
+
+
+def name_text(name: str, size: float = 13, weight=NSFontWeightRegular) -> NSAttributedString:
+    return _styled(name, font(size, weight), PRIMARY_TEXT)
+
+
+def key_text(key: str, size: float = 13, weight=NSFontWeightRegular, color=None, link: bool = False) -> NSAttributedString:
+    """A Jira key in monospace and colour; with `link` followed by ↗ (the same symbol as the open buttons)."""
+    color = color or ACCENT
+    result = NSMutableAttributedString.alloc().init()
+    result.appendAttributedString_(_styled(key, mono(size - 0.5, SEMIBOLD if weight == SEMIBOLD else MEDIUM), color))
+    image = link and symbol_image(LINK_SYMBOL, size - 2)
+    if image:
+        from AppKit import NSImageSymbolConfiguration, NSTextAttachment
+
+        image = image.imageWithSymbolConfiguration_(NSImageSymbolConfiguration.configurationWithPaletteColors_([color]))
+        attachment = NSTextAttachment.alloc().init()
+        attachment.setImage_(image)
+        attachment.setBounds_(NSMakeRect(0, -1.5, image.size().width, image.size().height))
+        result.appendAttributedString_(_styled(" ", font(size, weight), color))
+        result.appendAttributedString_(NSAttributedString.attributedStringWithAttachment_(attachment))
+    return result
+
+
+LINK_SYMBOL = "arrow.up.right.square"
+
+
 def _styled(text: str, fnt, color) -> NSAttributedString:
     paragraph = NSMutableParagraphStyle.alloc().init()
     paragraph.setLineBreakMode_(4)  # afkappen met …

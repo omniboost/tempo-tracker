@@ -1,3 +1,4 @@
+import dataclasses
 import tempfile
 import unittest
 from datetime import datetime
@@ -6,8 +7,9 @@ from unittest import mock
 
 from tempo_tracker import app as app_module
 from tempo_tracker.config import Config
+from tempo_tracker.dialogs import PickItem
 from tempo_tracker.jira import Issue
-from tempo_tracker.tempo import TempoError
+from tempo_tracker.tempo import TempoError, TempoWorklog
 from tempo_tracker.tracker import PAUSED
 
 DAY = "2026-10-19"
@@ -55,7 +57,7 @@ class OverviewFlowTest(unittest.TestCase):
         """`edit(lines)` past de regels aan zoals de gebruiker zou doen; daarna 'Versturen'."""
         calls = []
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             calls.append([line.label for line in lines])
             if len(calls) > 1:
                 return None, lines
@@ -74,7 +76,7 @@ class OverviewFlowTest(unittest.TestCase):
             lines[0].description = "Koppeling getest"
             lines[1].target_key = "IN-100"
             lines[2].duration = "0:00"  # IN-2 schrappen
-            lines[3].target_key, lines[3].duration = "IN-9", "0:30"  # handmatige regel
+            lines.append(self.app._new_line(PickItem("IN-9", "IN-9 · look up in Jira", "manual"), "0:30", {}))  # added at the top
 
         _, _, message = self.run_overview(edit)
 
@@ -133,7 +135,7 @@ class OverviewFlowTest(unittest.TestCase):
     def test_saving_a_zeroed_line_removes_it(self):
         lines_seen = []
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             lines_seen.append([line.issue_key for line in lines if line.issue_key])
             if len(lines_seen) == 1:
                 lines[2].duration = "0:00"
@@ -152,7 +154,6 @@ class OverviewFlowTest(unittest.TestCase):
         def edit(lines):
             lines[1].removed = True  # Meetings zonder key: geen fout, want verwijderd
             lines[2].removed = True
-            lines[3].removed = True  # lege regel: wordt genegeerd
 
         _, chosen, _ = self.run_overview(edit)
 
@@ -163,7 +164,7 @@ class OverviewFlowTest(unittest.TestCase):
     def test_removing_a_saved_manual_line(self):
         self.app.store.save_draft(DAY, "IN-9", "IN-9", 1800, 0, "")
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             next(line for line in lines if line.issue_key == "IN-9").removed = True
             return "save", lines
 
@@ -181,7 +182,7 @@ class OverviewFlowTest(unittest.TestCase):
         self.jira.get_issue.side_effect = lambda key: Issue("IN-123", "300", "Meetings")
         seen = {}
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             seen["chips"], seen["lines"] = chips, [(line.issue_key, line.tracked) for line in lines if line.issue_key]
             return None, lines
 
@@ -195,7 +196,7 @@ class OverviewFlowTest(unittest.TestCase):
         self.tempo.worklogs.side_effect = TempoError("Tempo unreachable: ConnectionError")
         seen = {}
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             seen["text"] = text
             return None, lines
 
@@ -225,7 +226,7 @@ class OverviewFlowTest(unittest.TestCase):
         self.jira.get_issue.side_effect = lambda key: Issue("IN-123", "300", "Meetings")
         texts = []
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             texts.append(totals([(line.duration, line.removed) for line in lines])[0])
             texts.append(totals([("2:00", False), ("1:00", True), ("veel", False)])[0])
             return None, lines
@@ -247,7 +248,7 @@ class OverviewFlowTest(unittest.TestCase):
         self.app.store.save_draft(DAY, "IN-1", "IN-1 · Kassa koppelen", 4 * 3600, 70 * 60, "")
         seen = []
 
-        def fake_overview(title, text, lines, totals=None, chips=()):
+        def fake_overview(title, text, lines, totals=None, chips=(), **_):
             seen.append((text, {line.issue_key: (line.duration, line.auto_duration) for line in lines if line.issue_key}))
             next(line for line in lines if line.issue_key == "IN-1").duration = "1:15"  # ✎ geklikt
             return "save", lines
@@ -260,6 +261,179 @@ class OverviewFlowTest(unittest.TestCase):
         self.assertEqual(("4:00", "1:15"), durations["IN-1"])
         self.assertEqual(("0:45", ""), durations["@Meetings"])
         self.assertEqual({}, dict(self.app.store.drafts(DAY)))
+
+    def fill_gap(self, key="IN-9", label="IN-9 · Overleg", start=at(12), end=at(12, 45)):
+        """Like in the day overview: fill a gap with a ticket (the duration is added, the period goes in `periods`)."""
+        def edit(lines):
+            line = self.app._new_line(PickItem(key, label, "assigned"), "0:45", {})
+            lines.append(dataclasses.replace(line, periods=((start, end),)))
+        return edit
+
+    def test_a_filled_gap_is_saved_as_tracked_time(self):
+        def fake_overview(title, text, lines, **kwargs):
+            self.fill_gap()(lines)
+            return "save", lines
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview):
+            self.app._overview(DAY, False)
+        self.assertIn(("IN-9", "IN-9 · Overleg", at(12), at(12, 45)), self.app.store.segments(DAY))
+        row = next(r for r in app_module.build_overview(self.app.store, self.app.config, DAY) if r.issue_key == "IN-9")
+        self.assertEqual(45 * 60, row.seconds)  # not twice: the draft and the gap don't both count
+
+    def test_a_filled_gap_is_not_saved_on_cancel_or_back(self):
+        calls = []
+
+        def fake_overview(title, text, lines, **kwargs):
+            calls.append(kwargs["blocks"])
+            if len(calls) == 1:
+                lines[1].target_key = "IN-1"
+                self.fill_gap()(lines)
+                return "send", lines
+            return None, lines  # after 'Back': cancel
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview), \
+             mock.patch.object(app_module.dialogs, "choose", return_value=1):
+            self.app._overview(DAY, False)
+        self.assertNotIn("IN-9", [s[0] for s in self.app.store.segments(DAY)])
+        self.assertIn(("IN-9", True), [(b.key, b.pending) for b in calls[1]])  # still visible in the calendar after 'Back'
+        self.tempo.create_worklog.assert_not_called()
+
+    def test_a_filled_gap_is_sent_with_its_start_time(self):
+        self.jira.get_issue.side_effect = lambda key: Issue(key, {"IN-1": "101", "IN-2": "102", "IN-9": "900"}[key], "x")
+
+        def edit(lines):
+            lines[1].target_key = "IN-1"
+            self.fill_gap()(lines)
+
+        self.run_overview(edit)
+        created = {c.args[0]: c.args for c in self.tempo.create_worklog.call_args_list}
+        self.assertEqual(("900", "acc-1", DAY, "12:00:00", 2700, "Overleg"), created["900"])
+        self.assertEqual([], self.app.store.unsent_rows(DAY))
+
+    def test_the_overview_opens_in_the_view_you_used_last(self):
+        views = []
+
+        def fake_overview(title, text, lines, **kwargs):
+            views.append(kwargs["view"])
+            if len(views) == 1:
+                kwargs["on_view"]("calendar")  # like a click on the switch
+            return None, lines
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview):
+            self.app._overview(DAY, False)
+            self.app._overview(DAY, False)
+        self.assertEqual(["list", "calendar"], views)
+
+    def test_the_overview_knows_the_jira_site_to_open_tickets(self):
+        def fake_overview(title, text, lines, **kwargs):
+            self.assertEqual("company.atlassian.net", kwargs["jira_site"])
+            return None, lines
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview) as overview:
+            self.app._overview(DAY, False)
+        overview.assert_called_once()
+
+    def test_a_fixed_option_in_the_calendar_opens_its_jira_key(self):
+        self.app.config.fixed_options[0]["issue_key"] = "IN-9"
+        seen = {}
+
+        def fake_overview(title, text, lines, **kwargs):
+            seen.update({block.key: block.link_key for block in kwargs["blocks"]})
+            return None, lines
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview):
+            self.app._overview(DAY, False)
+        self.assertEqual({"IN-1": "IN-1", "@Meetings": "IN-9", "IN-2": "IN-2"}, seen)
+
+    def test_per_period_sends_one_worklog_per_tracked_period(self):
+        self.app.config.worklog_split = "period"
+        self.app.store.add_segment("IN-1", "IN-1 · Kassa koppelen", at(13), at(13, 30))
+
+        def edit(lines):
+            lines[1].target_key = "IN-100"
+            self.fill_gap()(lines)
+
+        _, chosen, message = self.run_overview(edit)
+        created = [(c.args[0], c.args[3], c.args[4]) for c in self.tempo.create_worklog.call_args_list]
+        self.assertEqual(
+            [("101", "09:00:00", 70 * 60), ("101", "13:00:00", 35 * 60), ("200", "10:10:00", 45 * 60),
+             ("102", "11:00:00", 15 * 60), ("900", "12:00:00", 45 * 60)],
+            created,
+        )
+        question = chosen.call_args_list[0]
+        self.assertIn("Send 5 worklogs", question.args[0])
+        self.assertIn("(2 periods)", question.args[1])
+        self.assertIn("One worklog per tracked period", question.args[1])
+        self.assertEqual([], self.app.store.unsent_rows(DAY))
+        self.assertEqual(sum(seconds for _, _, seconds in created), self.app.store.sent_seconds(DAY))
+
+    def test_per_ticket_stays_one_worklog_per_ticket(self):
+        self.app.store.add_segment("IN-1", "IN-1 · Kassa koppelen", at(13), at(13, 30))
+
+        def edit(lines):
+            lines[1].target_key = "IN-100"
+
+        self.run_overview(edit)
+        self.assertEqual(["101", "200", "102"], [c.args[0] for c in self.tempo.create_worklog.call_args_list])
+
+    def test_per_period_keeps_what_failed_open_without_sending_twice(self):
+        self.app.config.worklog_split = "period"
+        self.app.store.add_segment("IN-1", "IN-1 · Kassa koppelen", at(13), at(13, 30))
+        calls = []
+
+        def create(issue_id, account, day, start, seconds, description):
+            calls.append(start)
+            if issue_id == "101" and start == "13:00:00":
+                raise app_module.TempoError("Tempo is down")
+            return f"w-{len(calls)}"
+
+        self.tempo.create_worklog.side_effect = create
+
+        def edit(lines):
+            lines[1].target_key = "IN-100"
+
+        _, _, message = self.run_overview(edit)
+        self.assertEqual("Not everything was sent", message.call_args.args[0])
+        self.assertIn("IN-1: 0:35 not sent", message.call_args.args[1])
+        rows = {row.issue_key: row.seconds for row in app_module.build_overview(self.app.store, self.app.config, DAY)}
+        self.assertEqual({"IN-1": 35 * 60}, rows)  # only what failed; the 9:00 period is already in Tempo
+
+    def test_adding_a_fixed_option_uses_its_jira_key(self):
+        self.app.config.fixed_options[0]["issue_key"] = "IN-100"
+        line = self.app._new_line(PickItem("@Meetings", "Meetings", "fixed"), "0:30", {})
+        self.assertEqual(("@Meetings", "Meetings", "IN-100", True), (line.issue_key, line.label, line.target_key, line.target_key_editable))
+
+    def test_searching_a_ticket_for_a_line_skips_the_fixed_options(self):
+        self.app.store.replace_issues("assigned", [app_module.CachedIssue("IN-5", "5", "Hotfix", "assigned")])
+
+        def pick(title, text, items, **kwargs):
+            self.assertEqual("Ticket for Meetings", title)
+            self.assertNotIn("@Meetings", [item.key for item in items])
+            self.assertIn("IN-5", [item.key for item in items])
+            return items[0], 0
+
+        with mock.patch.object(app_module.dialogs, "pick", side_effect=pick):
+            self.assertIn(self.app._pick_ticket("Meetings"), {"IN-1", "IN-2", "IN-5"})
+        with mock.patch.object(app_module.dialogs, "pick", return_value=(None, 1)):
+            self.assertIsNone(self.app._pick_ticket(""))
+
+    def test_the_calendar_gets_tracked_time_and_what_is_in_tempo(self):
+        self.tempo.worklogs.return_value = [TempoWorklog("w-9", "900", "14:00:00", 1800, "Refinement [meeting]", DAY)]
+        seen = {}
+
+        def fake_overview(title, text, lines, **kwargs):
+            seen.update(kwargs)
+            return None, lines
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview), \
+             mock.patch.object(self.app, "_issue_key_for_id", return_value="IN-9"):
+            self.app._overview(DAY, False)
+        self.assertEqual(DAY, seen["day"])
+        self.assertEqual(
+            [("IN-1", "tracked"), ("@Meetings", "tracked"), ("IN-2", "tracked"), ("IN-9", "tempo")],
+            [(b.key, b.lane) for b in seen["blocks"]],
+        )
+        self.assertEqual("IN-9 · Refinement", seen["blocks"][-1].title)
 
     def test_app_starts_paused_without_history(self):
         self.assertEqual(PAUSED, self.app.tracker.status)

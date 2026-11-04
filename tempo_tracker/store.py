@@ -128,9 +128,22 @@ class Store:
             row[1] += seconds
         return [DayRow(key, label, int(round(seconds)), first) for key, (label, seconds, first) in rows.items()]
 
+    def segments(self, day: str) -> list[tuple[str, str, float, float]]:
+        """All tracked periods of a day (sent or not, except discarded): (key, label, start, end)."""
+        rows = self.db.execute(
+            "SELECT issue_key, label, started_at, ended_at FROM segments WHERE day = ? AND (worklog_id IS NULL OR worklog_id != -1) "
+            "ORDER BY started_at",
+            (day,),
+        ).fetchall()
+        return [(r["issue_key"], r["label"], r["started_at"], r["ended_at"]) for r in rows]
+
     def own_worklog_ids(self) -> set[str]:
         """Tempo-id's van worklogs die deze app zelf heeft verstuurd."""
         return {r[0] for r in self.db.execute("SELECT tempo_worklog_id FROM worklogs")}
+
+    def own_worklog_keys(self) -> dict[str, str]:
+        """Tempo id → Jira key of worklogs this app sent itself."""
+        return {r[0]: r[1] for r in self.db.execute("SELECT tempo_worklog_id, issue_key FROM worklogs")}
 
     def sent_seconds(self, day: str) -> int:
         row = self.db.execute("SELECT COALESCE(SUM(seconds), 0) FROM worklogs WHERE day = ?", (day,)).fetchone()
@@ -168,6 +181,40 @@ class Store:
                 (cursor.lastrowid, day, issue_key),
             )
             self.db.execute("DELETE FROM drafts WHERE day = ? AND issue_key = ?", (day, issue_key))
+
+    def record_worklogs(
+        self, day: str, issue_key: str, label: str, worklogs: list[tuple[int, str, str]], open_seconds: int = 0, description: str = ""
+    ) -> None:
+        """Several worklogs (seconds, description, Tempo id) for one ticket, when sending per period.
+
+        After this, all tracked time of that ticket counts as sent. What failed (`open_seconds`) stays a
+        draft, so it can still be sent later without anything going twice.
+        """
+        with self.db:
+            last_id = None
+            for seconds, text, tempo_worklog_id in worklogs:
+                last_id = self.db.execute(
+                    "INSERT INTO worklogs (day, issue_key, seconds, description, tempo_worklog_id, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (day, issue_key, seconds, text, tempo_worklog_id, time.time()),
+                ).lastrowid
+            self.db.execute(
+                "UPDATE segments SET worklog_id = ? WHERE day = ? AND issue_key = ? AND worklog_id IS NULL",
+                (last_id, day, issue_key),
+            )
+            self.db.execute("DELETE FROM drafts WHERE day = ? AND issue_key = ?", (day, issue_key))
+            if open_seconds:
+                self.db.execute(
+                    "INSERT INTO drafts (day, issue_key, label, seconds, base_seconds, description) VALUES (?, ?, ?, ?, 0, ?)",
+                    (day, issue_key, label, open_seconds, description),
+                )
+
+    def unsent_segments(self, day: str, issue_key: str) -> list[tuple[float, float]]:
+        """(start, end) of the unsent time of one ticket."""
+        rows = self.db.execute(
+            "SELECT started_at, ended_at FROM segments WHERE day = ? AND issue_key = ? AND worklog_id IS NULL ORDER BY started_at",
+            (day, issue_key),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     def discard_unsent(self, day: str, issue_key: str) -> None:
         """Rij bewust op 0 gezet: tijd telt niet meer mee, maar blijft als 'verworpen' herkenbaar."""

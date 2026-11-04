@@ -247,6 +247,11 @@ class TempoTrackerApp(rumps.App):
     # -- klok -----------------------------------------------------------------
 
     def on_tick(self, _sender=None) -> None:
+        # Alles wat hier opduikt, vroeg je niet zelf om: het pakt je toetsenbord niet af.
+        with ui.without_focus():
+            self._tick()
+
+    def _tick(self) -> None:
         if self.busy:
             return
         self._store_refreshed_issues()

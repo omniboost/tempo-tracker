@@ -579,6 +579,31 @@ class CheckinDeferralTest(TrackingAppCase):
         self.assertEqual(app_module.AWAY, self.app.tracker.status)
 
 
+class FocusTest(TrackingAppCase):
+    """Een vraag die vanzelf opduikt, pakt je toetsenbord niet af; een venster dat je zelf opent wel."""
+
+    def focus_during(self, method: str, start) -> bool:
+        seen = []
+        with mock.patch.object(self.app, method, side_effect=lambda *args: seen.append(app_module.ui._focus)):
+            start()
+        return seen[0]
+
+    def test_a_check_in_opens_without_focus(self):
+        self.app.tracker.tick = lambda now, idle: app_module.CheckinDue(at(9))
+        with mock.patch.object(app_module, "idle_seconds", return_value=0):
+            self.assertFalse(self.focus_during("_checkin", self.app.on_tick))
+        self.assertTrue(app_module.ui._focus)
+
+    def test_a_branch_switch_opens_without_focus(self):
+        self.app._pending_switch = object()
+        self.app.tracker.tick = lambda now, idle: None
+        with mock.patch.object(app_module, "idle_seconds", return_value=0):
+            self.assertFalse(self.focus_during("_on_branch_switch", self.app.on_tick))
+
+    def test_the_menu_opens_with_focus(self):
+        self.assertTrue(self.focus_during("_overview", lambda: self.app.on_overview_today(None)))
+
+
 class OpenTicketTest(TrackingAppCase):
     """The menu (and a shortcut) opens the current ticket in Jira. No browser opens in tests."""
 

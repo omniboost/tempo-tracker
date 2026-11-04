@@ -5,6 +5,8 @@ Alles is native AppKit en volgt de lichte en donkere modus van macOS.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import objc
 from AppKit import (
     NSAppearanceNameAqua,
@@ -59,6 +61,7 @@ from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 TIMED_OUT = -1
 ENTER_DELAY = 1.0  # Enter werkt pas na een seconde: een venster dat opduikt terwijl je typt, vangt anders jouw Enter op
+_focus = True  # False binnen without_focus()
 
 
 # -- kleuren -------------------------------------------------------------------
@@ -450,6 +453,8 @@ class Card:
         panel.setAnimationBehavior_(NSWindowAnimationBehaviorNone)
         # Op het huidige bureaublad tonen, ook boven een app op volledig scherm.
         panel.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary)
+        # Ook zichtbaar blijven als de app niet actief is (een venster dat vanzelf opduikt, zie without_focus).
+        panel.setHidesOnDeactivate_(False)
         _center_on_mouse_screen(panel)
         if self.first_responder is not None:
             panel.setInitialFirstResponder_(self.first_responder)
@@ -463,6 +468,20 @@ def activate() -> None:
     NSApp.activateIgnoringOtherApps_(True)
 
 
+@contextmanager
+def without_focus():
+    """Vensters die vanzelf opduiken: wel bovenop, maar je toetsen blijven in de app waar je typt.
+
+    Klik op het venster of gebruik de sneltoets (bring_to_front) om te antwoorden.
+    """
+    global _focus
+    previous, _focus = _focus, False
+    try:
+        yield
+    finally:
+        _focus = previous
+
+
 class _Fronter(NSObject):
     """Zet het venster na het openen nogmaals naar voren, ook als macOS de app niet actief maakt."""
 
@@ -472,12 +491,15 @@ class _Fronter(NSObject):
             return None
         self.window = window
         self.default_button = None
+        self.focus = True
         return self
 
     def front_(self, _timer):
-        activate()
+        if self.focus:
+            activate()
         self.window.orderFrontRegardless()
-        self.window.makeKeyWindow()
+        if self.focus:
+            self.window.makeKeyWindow()
 
     def expire_(self, _timer):
         NSApp.abortModal()
@@ -498,8 +520,11 @@ def _center_on_mouse_screen(window) -> None:
 
 
 def run_modal(window, default_button=None, timeout: float | None = None) -> int:
-    activate()
+    # Is de app al actief (bijv. een vervolgvraag nadat je op het venster klikte), dan krijgt het venster gewoon focus.
+    if _focus:
+        activate()
     fronter = _Fronter.alloc().initWithWindow_(window)
+    fronter.focus = _focus
     timers = [NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(0.3, fronter, "front:", None, False)]
     if default_button is not None:
         fronter.default_button = default_button

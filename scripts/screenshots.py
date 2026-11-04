@@ -170,7 +170,7 @@ def make_app(tmp: str):
     """De echte app met een tijdelijke database, demo-instellingen en nep-Jira/Tempo (geen netwerk)."""
     config = Config(
         jira_site="company.atlassian.net", email="me@example.com", fixed_options=FIXED,
-        git_folders="", shortcut="", week_reminder="fri 15:00",
+        git_folders="", shortcut="", open_shortcut="", week_reminder="fri 15:00",
     )
     patches = [
         mock.patch.object(app_module, "DB_PATH", Path(tmp) / "demo.db"),

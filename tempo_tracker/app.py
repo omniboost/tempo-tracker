@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Callable
 
 import rumps
-from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSBeep
 from PyObjCTools import AppHelper
 
 from . import credentials, dialogs, ui
@@ -55,6 +55,7 @@ SPLIT_MODES = ("ticket", "period")
 SNOOZE_SECONDS = 15 * 60
 SINCE_CHOICES = (("Now", 0), ("5m ago", 5), ("10m", 10), ("15m", 15), ("30m", 30))
 RECENT_IN_MENU = 5
+SWITCH_SHORTCUT, OPEN_SHORTCUT = 1, 2  # slots in HotKey
 PAUSE_ITEM = PickItem("", "Break / private (don't log)", "")
 SENT_DONE, SENT_PAUSE, SENT_KEEP = range(3)
 KEEP_SENT_DAYS = 35  # helemaal verstuurde dagen daarna wissen (ze staan in Tempo); het leren kijkt 4 weken terug
@@ -140,8 +141,13 @@ class TempoTrackerApp(rumps.App):
         self.pause_item = _with_icon(rumps.MenuItem("Pause", callback=self.on_toggle_pause), "pause.circle")
         self.week_menu = _with_icon(rumps.MenuItem("This week"), "calendar.badge.clock")
         self.switch_item = _with_icon(rumps.MenuItem("Switch ticket…", callback=self.on_switch), "arrow.left.arrow.right")
+        # The current ticket in Jira; ⌘O while the menu is open, or the global open shortcut from anywhere.
+        self.open_item = _with_icon(rumps.MenuItem("Open in Jira", callback=self.on_open_ticket), ui.LINK_SYMBOL)
+        self.open_item._menuitem.setKeyEquivalent_("o")
+        self._open_shortcut_symbol = ""
         self.menu = [
             self.current_item,
+            self.open_item,
             None,
             self.switch_item,
             _with_icon(rumps.MenuItem("Add time…", callback=self.on_add_time), "plus.circle"),
@@ -180,13 +186,32 @@ class TempoTrackerApp(rumps.App):
 
     def _register_shortcut(self) -> None:
         self.switch_item.title = "Switch ticket…"
+        self._open_shortcut_symbol = ""
         if self.hotkey is None:
             return
         if not self.config.shortcut:
-            self.hotkey.unregister()
-            return
-        if self.hotkey.register(self.config.shortcut, self._on_shortcut):
+            self.hotkey.unregister(SWITCH_SHORTCUT)
+        elif self.hotkey.register(self.config.shortcut, self._on_shortcut, SWITCH_SHORTCUT):
             self.switch_item.title = f"Switch ticket…  {parse_shortcut(self.config.shortcut)[2]}"
+        if not self.config.open_shortcut:
+            self.hotkey.unregister(OPEN_SHORTCUT)
+        elif self.hotkey.register(self.config.open_shortcut, self._on_open_shortcut, OPEN_SHORTCUT):
+            self._open_shortcut_symbol = parse_shortcut(self.config.open_shortcut)[2]
+        self._update_open_item()
+
+    def _on_open_shortcut(self) -> None:
+        AppHelper.callAfter(self.on_open_ticket, None)
+
+    def _current_jira_key(self) -> str:
+        """The Jira key of the ticket you're on (or were on, when paused); a fixed option's configured key."""
+        current = self.tracker.current
+        if current is None:
+            return ""
+        return self.config.fixed_issue_key(current.label) if current.is_fixed else current.key
+
+    def on_open_ticket(self, _sender) -> None:
+        if not dialogs.open_issue(self.config.jira_site, self._current_jira_key()):
+            NSBeep()  # no ticket with a Jira key: nothing to open
 
     def _on_shortcut(self) -> None:
         """Sneltoets: een openstaand venster naar voren halen, anders de ticketkiezer openen."""
@@ -354,6 +379,14 @@ class TempoTrackerApp(rumps.App):
         )
         self._update_week_menu()
         self._update_recent()
+        self._update_open_item()
+
+    def _update_open_item(self) -> None:
+        """'Open IN-123 in Jira', only when the current ticket has a Jira key."""
+        key = self._current_jira_key() if self.config.jira_site else ""
+        self.open_item._menuitem.setHidden_(not key)
+        if key:
+            self.open_item.title = f"Open {key} in Jira" + (f"  {self._open_shortcut_symbol}" if self._open_shortcut_symbol else "")
 
     def _update_recent(self) -> None:
         """De laatste tickets direct in het menu, onder 'Switch ticket…': één klik om te wisselen."""
@@ -1332,6 +1365,7 @@ class TempoTrackerApp(rumps.App):
             "git_folders": config.git_folders,
             "branch_switch": config.branch_switch,
             "shortcut": config.shortcut,
+            "open_shortcut": config.open_shortcut,
             "day_target": config.day_target,
             "week_reminder": config.week_reminder,
             "call_min_minutes": str(config.call_min_minutes),
@@ -1372,6 +1406,7 @@ class TempoTrackerApp(rumps.App):
                     FormField("git_folders", "Git folders", values["git_folders"], "~/Projects · empty = off"),
                     FormField("branch_switch", "On branch switch", values["branch_switch"], "ask, auto or off"),
                     FormField("shortcut", "Shortcut", values["shortcut"], "ctrl+alt+t · empty = off"),
+                    FormField("open_shortcut", "Open ticket shortcut", values["open_shortcut"], "ctrl+alt+j · empty = off"),
                 ],
             )
             if result is None:
@@ -1423,6 +1458,11 @@ class TempoTrackerApp(rumps.App):
         shortcut = values["shortcut"].strip().lower().replace(" ", "")
         if shortcut:
             parse_shortcut(shortcut)
+        open_shortcut = values["open_shortcut"].strip().lower().replace(" ", "")
+        if open_shortcut:
+            parse_shortcut(open_shortcut)
+            if shortcut and parse_shortcut(open_shortcut)[:2] == parse_shortcut(shortcut)[:2]:
+                raise ValueError("Open ticket shortcut: choose another combination than Shortcut")
         branch_switch = values["branch_switch"].strip().lower()
         if branch_switch not in BRANCH_MODES:
             raise ValueError("On branch switch: enter ask, auto or off")
@@ -1448,6 +1488,7 @@ class TempoTrackerApp(rumps.App):
         self.config.branch_switch = branch_switch
         self.config.worklog_split = worklog_split
         self.config.shortcut = shortcut
+        self.config.open_shortcut = open_shortcut
         self.config.day_target = day_target
         self.config.week_reminder = week_reminder
         self._last_repo_scan = 0.0

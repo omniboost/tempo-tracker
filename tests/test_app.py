@@ -22,7 +22,7 @@ def at(hour: int, minute: int = 0) -> float:
 class OverviewFlowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        config = Config(jira_site="company.atlassian.net", email="me@example.com", fixed_options=[{"label": "Meetings", "issue_key": ""}], git_folders="", shortcut="", week_reminder="")
+        config = Config(jira_site="company.atlassian.net", email="me@example.com", fixed_options=[{"label": "Meetings", "issue_key": ""}], git_folders="", shortcut="", open_shortcut="", week_reminder="")
         patches = [
             mock.patch.object(app_module, "DB_PATH", Path(self.tmp.name) / "t.db"),
             mock.patch.object(app_module, "load_config", return_value=config),
@@ -446,7 +446,7 @@ class TrackingAppCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         patches = [
             mock.patch.object(app_module, "DB_PATH", Path(self.tmp.name) / "t.db"),
-            mock.patch.object(app_module, "load_config", return_value=Config(jira_site="company.atlassian.net", email="me@example.com", git_folders="", shortcut="", week_reminder="")),
+            mock.patch.object(app_module, "load_config", return_value=Config(jira_site="company.atlassian.net", email="me@example.com", git_folders="", shortcut="", open_shortcut="", week_reminder="")),
             mock.patch.object(app_module, "save_config"),
             mock.patch.object(app_module.credentials, "get_token", return_value="token"),
         ]
@@ -577,6 +577,79 @@ class CheckinDeferralTest(TrackingAppCase):
             self.app._checkin(app_module.CheckinDue(at(9)))
         self.assertEqual(45 * 60, self.seconds("IN-1"))
         self.assertEqual(app_module.AWAY, self.app.tracker.status)
+
+
+class OpenTicketTest(TrackingAppCase):
+    """The menu (and a shortcut) opens the current ticket in Jira. No browser opens in tests."""
+
+    def open(self):
+        with mock.patch.object(app_module.dialogs, "open_issue", return_value=True) as open_issue:
+            self.app.on_open_ticket(None)
+        return open_issue
+
+    def item(self):
+        self.app._update_menu()
+        return self.app.open_item
+
+    def test_the_menu_opens_the_current_ticket(self):
+        self.assertEqual("Open IN-1 in Jira", self.item().title)
+        self.assertFalse(self.item()._menuitem.isHidden())
+        self.assertEqual("o", self.item()._menuitem.keyEquivalent())
+        self.open().assert_called_once_with("company.atlassian.net", "IN-1")
+
+    def test_a_fixed_option_opens_its_jira_key(self):
+        self.app.config.fixed_options = [{"label": "Support", "issue_key": "IN-50"}]
+        self.app.tracker.start(app_module.Activity.fixed("Support"), self.now)
+        self.assertEqual("Open IN-50 in Jira", self.item().title)
+        self.open().assert_called_once_with("company.atlassian.net", "IN-50")
+
+    def test_nothing_to_open_without_a_jira_key(self):
+        self.app.config.fixed_options = [{"label": "Support", "issue_key": ""}]
+        self.app.tracker.start(app_module.Activity.fixed("Support"), self.now)
+        self.assertTrue(self.item()._menuitem.isHidden())
+        with mock.patch.object(app_module, "NSBeep") as beep, mock.patch("AppKit.NSWorkspace") as workspace:
+            self.app.on_open_ticket(None)
+        beep.assert_called_once()
+        workspace.sharedWorkspace.assert_not_called()
+
+    def test_when_paused_it_opens_the_last_ticket(self):
+        self.app.on_toggle_pause(None)
+        self.assertEqual(PAUSED, self.app.tracker.status)
+        self.assertEqual("Open IN-1 in Jira", self.item().title)
+
+    def test_both_shortcuts_get_their_own_slot(self):
+        self.app.hotkey = mock.Mock()
+        self.app.hotkey.register.return_value = True
+        self.app.config.shortcut, self.app.config.open_shortcut = "ctrl+alt+t", "ctrl+alt+j"
+        self.app._register_shortcut()
+        slots = {call.args[0]: call.args[2] for call in self.app.hotkey.register.call_args_list}
+        self.assertEqual({"ctrl+alt+t": app_module.SWITCH_SHORTCUT, "ctrl+alt+j": app_module.OPEN_SHORTCUT}, slots)
+        self.assertEqual("Open IN-1 in Jira  ⌃⌥J", self.item().title)
+
+    def test_an_empty_open_shortcut_is_off(self):
+        self.app.hotkey = mock.Mock()
+        self.app.config.shortcut, self.app.config.open_shortcut = "", ""
+        self.app._register_shortcut()
+        self.app.hotkey.register.assert_not_called()
+        self.app.hotkey.unregister.assert_any_call(app_module.OPEN_SHORTCUT)
+        self.assertEqual("Open IN-1 in Jira", self.item().title)
+
+    def test_settings_refuse_the_same_combination_twice(self):
+        forms, messages = [], []
+
+        def fake_form(*args, **kwargs):
+            fields = next(a for a in [*args, *kwargs.values()] if isinstance(a, list) and a and isinstance(a[0], app_module.FormField))
+            forms.append(fields)
+            if len(forms) > 1:
+                return None  # Cancel after the message
+            values = {field.name: field.value for field in fields}
+            values.update(shortcut="ctrl+alt+t", open_shortcut="alt + ctrl + t")
+            return values
+
+        with mock.patch.object(app_module.dialogs, "form", side_effect=fake_form), \
+             mock.patch.object(app_module.dialogs, "message", side_effect=lambda title, text: messages.append(text)):
+            self.app._settings()
+        self.assertEqual(["Open ticket shortcut: choose another combination than Shortcut"], messages)
 
 
 class CallTest(TrackingAppCase):
@@ -849,7 +922,7 @@ class StartTimeFlowTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         patches = [
             mock.patch.object(app_module, "DB_PATH", Path(self.tmp.name) / "t.db"),
-            mock.patch.object(app_module, "load_config", return_value=Config(jira_site="company.atlassian.net", email="me@example.com", git_folders="", shortcut="", week_reminder="")),
+            mock.patch.object(app_module, "load_config", return_value=Config(jira_site="company.atlassian.net", email="me@example.com", git_folders="", shortcut="", open_shortcut="", week_reminder="")),
             mock.patch.object(app_module, "save_config"),
             mock.patch.object(app_module.credentials, "get_token", return_value="token"),
         ]
@@ -917,7 +990,7 @@ class StartTimeFlowTest(unittest.TestCase):
 class BranchSwitchFlowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.config = Config(jira_site="company.atlassian.net", email="me@example.com", git_folders="", shortcut="", week_reminder="")
+        self.config = Config(jira_site="company.atlassian.net", email="me@example.com", git_folders="", shortcut="", open_shortcut="", week_reminder="")
         patches = [
             mock.patch.object(app_module, "DB_PATH", Path(self.tmp.name) / "t.db"),
             mock.patch.object(app_module, "load_config", return_value=self.config),

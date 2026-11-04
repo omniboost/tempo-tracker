@@ -38,6 +38,7 @@ class Config:
     git_folders: str = "~/Projects"  # komma-gescheiden; leeg = geen git
     branch_switch: str = "ask"  # ask | auto | off
     shortcut: str = "ctrl+alt+t"  # leeg = uit
+    open_shortcut: str = "ctrl+alt+j"  # opens the current ticket in Jira; empty = off
     day_target: str = "8:00"  # uren per dag voor 'nog te gaan'; leeg = niet tonen
     week_reminder: str = "fri 15:00"  # weekseintje; leeg = uit
     work_days: str = "mon-fri"  # op andere dagen vraagt de app niets uit zichzelf

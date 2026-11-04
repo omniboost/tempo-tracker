@@ -1160,7 +1160,7 @@ class _TicketPicker(NSObject):
 _OPEN_WIDTH = 26  # the "open in Jira" button at the right of the ticket column
 
 
-def _open_issue(site: str, key: str) -> bool:
+def open_issue(site: str, key: str) -> bool:
     """Opens the ticket in the default browser. False (and nothing opens) without a valid key."""
     url = issue_url(site, key)
     if url is None:
@@ -1183,7 +1183,7 @@ class _IssueOpener(NSObject):
         return self
 
     def open_(self, _button):
-        _open_issue(self.site, self.key())
+        open_issue(self.site, self.key())
 
 
 class _ViewSwitcher(NSObject):
@@ -1318,7 +1318,7 @@ class _CalendarView(NSView):
                 if self.owner.on_gap:
                     self.owner.on_gap(start, end)
             elif self.can_open(block):
-                _open_issue(self.site, block.link_key)
+                open_issue(self.site, block.link_key)
             return
 
     def drawRect_(self, rect):

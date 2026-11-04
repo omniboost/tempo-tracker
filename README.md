@@ -145,6 +145,7 @@ You don't need to know the keys up front. Leave them out (`Standup, Retro`), and
 
 - **Switch ticket…** in the menu, or **⌃⌥T** from anywhere. Search by key or title (text also searches Jira after a short pause), or type a key like `IN-1234`.
 - **Recent tickets** are listed right under *Switch ticket…* in the menu: one click switches.
+- **Open in Jira**: the current ticket is one click away under the header (⌘O while the menu is open), or **⌃⌥J** from anywhere. For a fixed option it opens the Jira key you set for it.
 - **Add time…** in the menu: book a piece of time on another ticket in between, without waiting for the check-in.
 - **Git**: check out a branch with a ticket key (e.g. `feature/IN-42-split-bills`) in a repo under your git folders. The app asks whether to switch, or switches by itself if *On branch switch* is `auto`. The time up to the checkout stays on the previous ticket. Branches without a key, such as `main`, change nothing.
 
@@ -208,6 +209,7 @@ The switch above the lines shows your day as a timeline instead. The overview op
 | Item | What it does |
 |---|---|
 | Header | Current ticket, since when, and today's total against your hours per day. |
+| Open IN-123 in Jira | The current ticket (or the last one, when paused) in your browser. ⌘O in the menu; hidden when there's no Jira key. |
 | Pause / Resume | Pause tracking, or continue with the last ticket. |
 | Switch ticket… | Pick another ticket from now (or from an earlier time). |
 | Recent tickets | One click switches. |
@@ -248,6 +250,7 @@ The switch above the lines shows your day as a timeline instead. The overview op
 | Git folders | `~/Projects` | Where to look for repos; empty = off. |
 | On branch switch | `ask` | `ask`, `auto` or `off`. |
 | Shortcut | `ctrl+alt+t` | Opens *Switch ticket…*; empty = off. |
+| Open ticket shortcut | `ctrl+alt+j` | Opens the current ticket in Jira; empty = off. |
 
 ## How it works technically
 
@@ -268,7 +271,7 @@ A Python app on top of [rumps](https://github.com/jaredks/rumps) (menu bar) and 
 | `idle.py` | Seconds since the last keyboard/mouse input (`HIDIdleTime`), and whether the screen is off or locked (CoreGraphics). |
 | `git.py` | Finds repos, watches `.git/HEAD` for branch switches, reads commit messages. |
 | `jira.py`, `tempo.py` | REST clients for Jira Cloud and Tempo API v4. |
-| `hotkey.py` | Global shortcut (Carbon `RegisterEventHotKey`). |
+| `hotkey.py` | Global shortcuts (Carbon `RegisterEventHotKey`), one slot each. |
 | `dialogs.py`, `ui.py` | The native "card" windows: lists, forms, the day overview, the progress card. |
 | `config.py`, `credentials.py` | `config.json` and the Keychain. |
 

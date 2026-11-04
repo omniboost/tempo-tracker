@@ -179,7 +179,7 @@ class CalendarClickTest(unittest.TestCase):
     def click(self, key):
         row = next(r for r in self.view.rows if (r[2].key if r[2] else None) == key)
         box = self.view.card_rect(row)
-        with mock.patch.object(dialogs, "_open_issue") as open_issue:
+        with mock.patch.object(dialogs, "open_issue") as open_issue:
             self.view.click_at(NSMakePoint(box.origin.x + 10, box.origin.y + 10))
         return open_issue
 
@@ -202,8 +202,8 @@ class CalendarClickTest(unittest.TestCase):
 
     def test_open_issue_hands_the_url_to_the_browser(self):
         with mock.patch("AppKit.NSWorkspace") as workspace:
-            self.assertTrue(dialogs._open_issue("company.atlassian.net", "IN-2"))
-            self.assertFalse(dialogs._open_issue("company.atlassian.net", "@Standup"))
+            self.assertTrue(dialogs.open_issue("company.atlassian.net", "IN-2"))
+            self.assertFalse(dialogs.open_issue("company.atlassian.net", "@Standup"))
         (url,), _ = workspace.sharedWorkspace.return_value.openURL_.call_args
         self.assertEqual("https://company.atlassian.net/browse/IN-2", url.absoluteString())
         workspace.sharedWorkspace.return_value.openURL_.assert_called_once()

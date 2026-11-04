@@ -17,6 +17,9 @@ KEY_CODES = {
 }
 KEYBOARD_EVENTS = struct.unpack(">I", b"keyb")[0]
 HOT_KEY_PRESSED = 5
+SIGNATURE = struct.unpack(">I", b"TmpT")[0]
+DIRECT_OBJECT = struct.unpack(">I", b"----")[0]  # kEventParamDirectObject
+TYPE_HOT_KEY_ID = struct.unpack(">I", b"hkid")[0]  # typeEventHotKeyID
 
 
 def parse(shortcut: str) -> tuple[int, int, str]:
@@ -44,7 +47,7 @@ _HANDLER = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ct
 
 
 class HotKey:
-    """Eén globale sneltoets; `register` vervangt een eerdere."""
+    """Global shortcuts, one per slot (e.g. 1 = switch ticket, 2 = open ticket); `register` replaces the slot's earlier one."""
 
     def __init__(self) -> None:
         self._carbon = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/Carbon.framework/Carbon")
@@ -56,8 +59,11 @@ class HotKey:
             ctypes.c_uint32, ctypes.c_uint32, _HotKeyID, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)
         ]
         self._carbon.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
-        self._callback: Callable[[], None] | None = None
-        self._ref = ctypes.c_void_p()
+        self._carbon.GetEventParameter.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p
+        ]
+        self._callbacks: dict[int, Callable[[], None]] = {}
+        self._refs: dict[int, ctypes.c_void_p] = {}
         self._handler = _HANDLER(self._on_event)  # referentie bewaren, anders ruimt Python hem op
         spec = _EventTypeSpec(KEYBOARD_EVENTS, HOT_KEY_PRESSED)
         status = self._carbon.InstallEventHandler(
@@ -66,19 +72,29 @@ class HotKey:
         if status != 0:
             raise OSError(f"InstallEventHandler failed ({status})")
 
-    def _on_event(self, _call_ref, _event, _user_data) -> int:
-        if self._callback:
-            try:
-                self._callback()
-            except Exception:
-                log.exception("Shortcut handler failed")
+    def _on_event(self, _call_ref, event, _user_data) -> int:
+        """Carbon calls this for every shortcut of this app; the event's hot key id says which slot was pressed."""
+        hot_key_id = _HotKeyID()
+        status = self._carbon.GetEventParameter(
+            event, DIRECT_OBJECT, TYPE_HOT_KEY_ID, None, ctypes.sizeof(hot_key_id), None, ctypes.byref(hot_key_id)
+        )
+        if status == 0:
+            self._dispatch(hot_key_id.id)
         return 0
 
-    def register(self, shortcut: str, callback: Callable[[], None]) -> bool:
-        """Registreert de sneltoets; False als hij al door een andere app wordt gebruikt."""
-        self.unregister()
+    def _dispatch(self, slot: int) -> None:
+        callback = self._callbacks.get(slot)
+        if callback:
+            try:
+                callback()
+            except Exception:
+                log.exception("Shortcut handler failed")
+
+    def register(self, shortcut: str, callback: Callable[[], None], slot: int = 1) -> bool:
+        """Registers the shortcut in `slot`; False if another app (or slot) already uses it."""
+        self.unregister(slot)
         key_code, modifiers, _ = parse(shortcut)
-        hot_key_id = _HotKeyID(struct.unpack(">I", b"TmpT")[0], 1)
+        hot_key_id = _HotKeyID(SIGNATURE, slot)
         ref = ctypes.c_void_p()
         status = self._carbon.RegisterEventHotKey(
             key_code, modifiers, hot_key_id, self._carbon.GetApplicationEventTarget(), 0, ctypes.byref(ref)
@@ -86,11 +102,13 @@ class HotKey:
         if status != 0:
             log.warning("Shortcut %s could not be registered (%s)", shortcut, status)
             return False
-        self._ref, self._callback = ref, callback
+        self._refs[slot], self._callbacks[slot] = ref, callback
         return True
 
-    def unregister(self) -> None:
-        if self._ref:
-            self._carbon.UnregisterEventHotKey(self._ref)
-            self._ref = ctypes.c_void_p()
-        self._callback = None
+    def unregister(self, slot: int | None = None) -> None:
+        """Removes the shortcut in `slot`, or all of them."""
+        for n in list(self._refs) if slot is None else [slot]:
+            ref = self._refs.pop(n, None)
+            if ref:
+                self._carbon.UnregisterEventHotKey(ref)
+            self._callbacks.pop(n, None)

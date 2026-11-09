@@ -218,6 +218,8 @@ class _PickerController(NSObject):
         self.on_choose = None  # without: Enter or double-click closes the window with the choice
         self.on_text = None  # after every keystroke in the search field
         self.on_extra = None  # after every keystroke in extra_field
+        self.on_pick = None  # with it, a click or Tab fixes the selected suggestion (see choose)
+        self.chosen = None  # the suggestion fixed by choose(); typing again clears it
         self.start_field = None  # optional 'Start' field; typing your own time sets start_edited
         self.start_edited = False
         self.tab_order = ()  # fields for Tab/Shift-Tab; empty = switch between the search field and extra_field
@@ -296,6 +298,21 @@ class _PickerController(NSObject):
         self.table.scrollRowToVisible_(row)
 
     @objc.python_method
+    def choose(self) -> PickItem | None:
+        """Fix the selected suggestion: its name goes into the search field and later Jira answers can't change it."""
+        item = self.chosen or self.selected()
+        if item is None:
+            return None
+        self.chosen = item
+        self.search_id += 1  # a Jira answer still on its way is ignored
+        self.pending = False
+        self.search.setStringValue_(item.key if item.hint == "manual" else item.label)  # no textDidChange
+        self.refresh_status()
+        if self.on_pick:
+            self.on_pick()
+        return item
+
+    @objc.python_method
     def selected(self) -> PickItem | None:
         row = self.table.selectedRow()
         if 0 <= row < len(self.items):
@@ -326,6 +343,7 @@ class _PickerController(NSObject):
             if self.on_extra:
                 self.on_extra()
             return
+        self.chosen = None
         self.start_remote(self.search.stringValue())
         self.apply_filter(self.search.stringValue())
         if self.on_text:
@@ -352,6 +370,8 @@ class _PickerController(NSObject):
             else:
                 NSBeep()  # niets om te kiezen: het venster blijft open
             return True
+        if name == "insertTab:" and self.on_pick and control == self.search and self.search.stringValue().strip():
+            self.choose()  # then Tab moves on as usual
         if name in ("insertTab:", "insertBacktab:") and self.tab_order:
             order = list(self.tab_order)
             step = 1 if name == "insertTab:" else -1
@@ -363,6 +383,12 @@ class _PickerController(NSObject):
             control.window().makeFirstResponder_(target)
             return True
         return False
+
+    def clicked_(self, sender):
+        if self.on_pick and 0 <= self.table.clickedRow() < len(self.items):
+            self.choose()
+            if self.extra_field is not None:
+                self.table.window().makeFirstResponder_(self.extra_field)  # next: how long
 
     def doubleClicked_(self, sender):
         if self.on_choose:
@@ -768,6 +794,7 @@ def overview(
         table.setDataSource_(adder)
         table.setDelegate_(adder)
         table.setTarget_(adder)
+        table.setAction_("clicked:")  # one click fixes the ticket (see _PickerController.choose)
         table.setDoubleAction_("doubleClicked:")
         suggestions.setDocumentView_(table)
         suggestions_view = card.add(ui.fixed(suggestions, card.inner, SUGGESTION_ROWS * 30))
@@ -874,7 +901,7 @@ def overview(
     if adder is not None:
         def show_suggestions() -> None:
             """Suggestions only while searching, as tall as needed (at most SUGGESTION_ROWS)."""
-            rows = min(len(adder.items), SUGGESTION_ROWS) if search.stringValue().strip() else 0
+            rows = min(len(adder.items), SUGGESTION_ROWS) if search.stringValue().strip() and adder.chosen is None else 0
             suggestions_view.setHidden_(rows == 0)
             _set_height(suggestions_view, max(rows, 1) * 30)
             _fit(card)
@@ -930,13 +957,14 @@ def overview(
             return start, end
 
         def add_time() -> None:
-            item = adder.selected() if search.stringValue().strip() else None
+            item = adder.chosen or (adder.selected() if search.stringValue().strip() else None)
             if item is None:
                 NSBeep()
                 card.panel.makeFirstResponder_(search)
                 return
             text_value = add_duration.stringValue().strip()
             if not text_value:
+                adder.choose()
                 card.panel.makeFirstResponder_(add_duration)  # a duration first
                 return
             try:
@@ -972,6 +1000,7 @@ def overview(
                     timeline.Block(period[0], period[1], item.key, item.label, timeline.TRACKED, pending=True, jira_key=line.target_key)
                 )
             say("")
+            adder.chosen = None
             search.setStringValue_("")
             add_duration.setStringValue_("")
             add_duration.setTextColor_(ui.PRIMARY_TEXT)
@@ -982,7 +1011,7 @@ def overview(
             _fit(card)
             card.panel.makeFirstResponder_(search)
 
-        adder.on_choose, adder.on_text, adder.on_extra = add_time, show_suggestions, suggest_start
+        adder.on_choose, adder.on_text, adder.on_extra, adder.on_pick = add_time, show_suggestions, suggest_start, show_suggestions
         if calendar is not None:
             calendar.on_gap = fill_gap
         suggest_start()

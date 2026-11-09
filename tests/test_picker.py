@@ -33,6 +33,24 @@ class PickerTest(unittest.TestCase):
         self.assertEqual(LOCAL, picker.items)  # het antwoord van "kas" is niet getoond
         self.assertTrue(picker.pending)
 
+    def test_jira_results_notify_on_text_so_the_list_can_resize(self):
+        picker = controller(remote=lambda text: [])
+        picker.on_text = mock.Mock()
+        picker.search.stringValue.return_value = "kassa"
+        picker.start_remote("kassa")
+        picker.show_remote(picker.search_id, [PickItem("IN-9", "IN-9 · Kassa app", "Jira")], "")
+        picker.on_text.assert_called_once_with()
+
+    def test_an_older_answer_does_not_notify_on_text(self):
+        picker = controller(remote=lambda text: [])
+        picker.on_text = mock.Mock()
+        picker.search.stringValue.return_value = "kass"
+        picker.start_remote("kas")
+        old = picker.search_id
+        picker.start_remote("kass")
+        picker.show_remote(old, [PickItem("IN-9", "IN-9 · Kassa app", "Jira")], "")
+        picker.on_text.assert_not_called()
+
     def test_short_text_does_not_search_jira(self):
         picker = controller(remote=mock.Mock())
         picker.start_remote("ka")

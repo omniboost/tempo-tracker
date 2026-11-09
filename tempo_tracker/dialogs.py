@@ -282,6 +282,8 @@ class _PickerController(NSObject):
         keep = self.selected().key if self.selected() else None
         self.pending, self.remote_items, self.error = False, items, error
         self.apply_filter(self.search.stringValue(), keep)
+        if self.on_text:
+            self.on_text()  # the list may need to grow now that the Jira results are in
 
     @objc.python_method
     def select_row(self, row: int) -> None:

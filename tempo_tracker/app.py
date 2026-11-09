@@ -34,7 +34,7 @@ from .hotkey import HotKey
 from .hotkey import parse as parse_shortcut
 from .icon import app_icon
 from .idle import idle_seconds, screen_off
-from .jira import JiraClient, JiraError
+from .jira import Issue, JiraClient, JiraError
 from .meetings import LOOKBACK_SECONDS, MEETING_MAX_SECONDS, suggest
 from .store import CachedIssue, Store, day_of, today
 from .summary import build_overview, default_description, format_duration, parse_duration, round_seconds
@@ -126,6 +126,7 @@ class TempoTrackerApp(rumps.App):
         self.needs_setup = not self._has_credentials()
         self._refresh_lock = threading.Lock()
         self._refresh_result: tuple | None = None
+        self._known_projects: list[str] = []  # project keys from the picker lists, for searching on a bare number
         self._last_refresh = 0.0
         self._week_entries: list[tuple[str, str | None]] | None = None
         self._week_tempo: dict[str, list] | None = None  # dag -> worklogs uit Tempo (deze week); None = nog niet gelezen
@@ -600,11 +601,23 @@ class TempoTrackerApp(rumps.App):
         for option in self.config.fixed_options:
             key = f"@{option['label']}"
             items[key] = PickItem(key, option["label"], "fixed")
+        # Remembered here (main thread): _search_jira runs on a background thread and can't use the store.
+        keys = [key for key in items if not key.startswith("@")] + [o.get("issue_key", "") for o in self.config.fixed_options]
+        self._known_projects = list(dict.fromkeys(key.split("-")[0] for key in keys if "-" in key))
         return list(items.values())
 
     def _search_jira(self, text: str) -> list[PickItem]:
         """Voor de ticketkiezer: tekst zonder key ook in Jira zoeken (draait op een achtergrondthread)."""
-        return [PickItem(i.key, f"{i.key} · {i.summary}", "Jira") for i in self._jira().search_text(text)]
+        jira = self._jira()
+        found: dict[str, Issue] = {}
+        try:
+            for issue in jira.search_key_prefix(text, self._known_projects):
+                found.setdefault(issue.key, issue)
+        except JiraError as error:  # the title search below still runs
+            log.warning("Searching Jira by key failed: %s", error)
+        for issue in jira.search_text(text):
+            found.setdefault(issue.key, issue)
+        return [PickItem(i.key, f"{i.key} · {i.summary}", "Jira") for i in found.values()]
 
     def _to_activity(self, item: PickItem) -> Activity | None:
         if item.key.startswith("@"):
@@ -951,10 +964,8 @@ class TempoTrackerApp(rumps.App):
         rows = build_overview(self.store, self.config, day, booked)
         from_commits = self._commit_descriptions(day)
         sent = self.store.sent_seconds(day)
-        if not rows:
-            if not end_of_day:
-                dialogs.message(title, "Nothing left to send.\n" + self._totals_text([], in_tempo))
-            return
+        if not rows and end_of_day:
+            return  # an empty popup that appears by itself only gets in the way
 
         lines = [
             OverviewLine(
@@ -981,6 +992,8 @@ class TempoTrackerApp(rumps.App):
                 notes.append("✎ = a time you changed")
             if sent:
                 notes.append(f"already sent {format_duration(sent)}")
+            if not lines:
+                notes.append("search for a ticket above to add more" if sent else "nothing tracked yet · search for a ticket above to add time")
             intro = " · ".join(notes) + ("\n" + booked_text if booked_text else "")
             # A fixed option ('@Support Work') opens the Jira key you set for it in the list.
             jira_keys = {line.issue_key: line.target_key for line in lines if line.target_key_editable}

@@ -204,6 +204,42 @@ class OverviewFlowTest(unittest.TestCase):
             self.app._overview(DAY, False)
         self.assertIn("Couldn't read your worklogs from Tempo", seen["text"])
 
+    def test_overview_opens_empty_so_you_can_add_time_you_forgot_to_track(self):
+        seen = {}
+
+        def fake_overview(title, text, lines, totals=None, chips=(), **kwargs):
+            seen.update(text=text, lines=lines, new_line=kwargs.get("new_line"))
+            return None, lines
+
+        with mock.patch.object(app_module.dialogs, "overview", side_effect=fake_overview), \
+             mock.patch.object(app_module.dialogs, "message") as message:
+            self.app._overview("2026-10-20", False)
+        self.assertEqual([], seen["lines"])
+        self.assertIsNotNone(seen["new_line"])
+        self.assertIn("nothing tracked yet", seen["text"])
+        message.assert_not_called()
+
+    def test_end_of_day_shows_nothing_when_nothing_was_tracked(self):
+        with mock.patch.object(app_module.dialogs, "overview") as overview, \
+             mock.patch.object(app_module.dialogs, "message") as message:
+            self.app._overview("2026-10-20", True)
+        overview.assert_not_called()
+        message.assert_not_called()
+
+    def test_jira_search_puts_key_matches_first_and_uses_known_projects(self):
+        self.app.store.replace_issues("assigned", [app_module.CachedIssue("CSI-7", "7", "Bug", "assigned")])
+        self.app._pick_items()
+        self.jira.search_key_prefix.return_value = [Issue("IN-4951", "1", "Jobs")]
+        self.jira.search_text.return_value = [Issue("IN-12", "2", "4951 in the title"), Issue("IN-4951", "1", "Jobs")]
+        found = self.app._search_jira("4951")
+        self.assertEqual(["IN-4951", "IN-12"], [item.key for item in found])
+        self.assertEqual(["IN", "CSI"], sorted(self.jira.search_key_prefix.call_args.args[1], key=["IN", "CSI"].index))
+
+    def test_a_failing_key_search_keeps_the_title_results(self):
+        self.jira.search_key_prefix.side_effect = app_module.JiraError("Jira returned HTTP 400")
+        self.jira.search_text.return_value = [Issue("IN-12", "2", "Kassa")]
+        self.assertEqual(["IN-12"], [item.key for item in self.app._search_jira("IN-12")])
+
     def test_commit_messages_become_the_default_description(self):
         self.app._commit_descriptions = lambda day: {"IN-1": "Add tips; Void a check"}
         placeholders = {}

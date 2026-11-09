@@ -3,7 +3,7 @@ from unittest import mock
 
 import requests
 
-from tempo_tracker.jira import JiraClient, JiraError
+from tempo_tracker.jira import JiraClient, JiraError, key_candidates
 from tempo_tracker.tempo import TempoClient, TempoError
 
 
@@ -69,6 +69,44 @@ class JiraClientTest(unittest.TestCase):
         client, session = self.client()
         self.assertEqual([], client.search_text('"" \\'))
         session.request.assert_not_called()
+
+    @mock.patch("tempo_tracker.jira.requests.get")
+    def test_key_search_asks_for_the_listed_keys_in_key_order(self, get):
+        get.return_value = response(200, {"cloudId": "abc"})
+        found = {"issues": [{"key": "IN-4951", "id": "1", "fields": {"summary": "Jobs"}}]}
+        client, session = self.client(response(200, found))
+        self.assertEqual(["IN-4951"], [i.key for i in client.search_key_prefix("IN-4951", [])])
+        jql = session.request.call_args.kwargs["json"]["jql"]
+        self.assertTrue(jql.startswith('key in ("IN-4951", "IN-49510", '))
+        self.assertTrue(jql.endswith('"IN-495199") ORDER BY key ASC'))
+
+    def test_key_search_without_a_key_does_not_call_jira(self):
+        client, session = self.client()
+        self.assertEqual([], client.search_key_prefix("kassa", ["IN"]))
+        session.request.assert_not_called()
+
+
+class KeyCandidatesTest(unittest.TestCase):
+    def test_part_of_a_key_lists_that_key_and_up_to_two_more_digits(self):
+        keys = key_candidates("in-495", [])
+        self.assertEqual(111, len(keys))
+        self.assertEqual(["IN-495", "IN-4950", "IN-4951"], keys[:3])
+        self.assertIn("IN-49599", keys)
+        self.assertNotIn("IN-495000", keys)
+
+    def test_a_bare_number_is_tried_in_each_known_project(self):
+        keys = key_candidates(" 4951 ", ["IN", "CSI", "IN"])
+        self.assertEqual(222, len(keys))
+        self.assertEqual(["IN-4951", "IN-49510"], keys[:2])
+        self.assertIn("CSI-4951", keys)
+
+    def test_a_bare_number_uses_at_most_five_projects_with_valid_keys(self):
+        keys = key_candidates("12", ["A", "B", 'X" OR 1=1', "C", "D", "E", "F"])
+        self.assertEqual(["A", "B", "C", "D", "E"], sorted({key.split("-")[0] for key in keys}))
+
+    def test_text_that_is_not_a_key_gives_nothing(self):
+        for text in ("kassa", "IN-", "IN-49 kassa", "IN 495", "4.9"):
+            self.assertEqual([], key_candidates(text, ["IN"]), text)
 
 
 class TempoClientTest(unittest.TestCase):

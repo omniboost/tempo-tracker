@@ -8,6 +8,28 @@ from dataclasses import dataclass
 import requests
 
 TIMEOUT = 15
+KEY_EXTRA_DIGITS = 2  # "IN-495" also finds IN-4950..IN-49599, not longer keys
+KEY_MAX_PROJECTS = 5  # a bare number is tried in at most this many projects
+
+
+def key_candidates(text: str, projects: list[str]) -> list[str]:
+    """Keys that start with what you typed: 'IN-495' or a bare '495' (then in each of `projects`).
+
+    Jira can't search on part of a key and ignores key ranges, so the candidates are listed one by one.
+    Returns [] when the text doesn't look like (part of) a key.
+    """
+    match = re.fullmatch(r"(?:([A-Za-z][A-Za-z0-9_]*)-)?(\d+)", text.strip())
+    if not match:
+        return []
+    project, number = match.groups()
+    if project:
+        prefixes = [project.upper()]
+    else:
+        prefixes = [p for p in dict.fromkeys(projects) if re.fullmatch(r"[A-Z][A-Z0-9_]*", p)][:KEY_MAX_PROJECTS]
+    numbers = [number]
+    for extra in range(1, KEY_EXTRA_DIGITS + 1):
+        numbers += [f"{number}{n:0{extra}d}" for n in range(10**extra)]
+    return [f"{prefix}-{n}" for prefix in prefixes for n in numbers]
 
 
 class JiraError(Exception):
@@ -89,6 +111,14 @@ class JiraClient:
             return []
         conditions = " AND ".join(f'summary ~ "{word}*"' for word in words)
         return self.search(f"{conditions} ORDER BY updated DESC", limit=limit)
+
+    def search_key_prefix(self, text: str, projects: list[str], limit: int = 20) -> list[Issue]:
+        """Issues whose key starts with `text` (see key_candidates); unknown keys are skipped by Jira."""
+        keys = key_candidates(text, projects)
+        if not keys:
+            return []
+        listed = ", ".join(f'"{key}"' for key in keys)
+        return self.search(f"key in ({listed}) ORDER BY key ASC", limit=limit)
 
     def assigned_issues(self) -> list[Issue]:
         return self.search("assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC")

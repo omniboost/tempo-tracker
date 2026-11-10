@@ -566,13 +566,15 @@ class FormField:
     placeholder: str = ""
     secure: bool = False
     section: str = ""  # kopje boven dit veld (alleen bij het eerste veld van een blok)
+    choices: tuple[tuple[str, str], ...] = ()  # (value, label) pairs: a switch instead of a text field
+    lines: int = 1  # more than 1: a taller field whose text wraps onto the next line
 
 
 def form(title: str, text: str, fields: list[FormField], buttons: tuple[str, ...] = ("Save", "Cancel")) -> dict | None:
     """Label/invoer-paren onder elkaar, in blokken met een kopje. None bij de laatste knop (annuleren)."""
     card = ui.Card(title, width=620)
     label_width, field_width = 170, card.inner - 170 - 12
-    inputs = {}
+    inputs, choices = {}, {}
     for item in fields:
         if item.section:
             card.add(ui.label(item.section, 13, ui.SEMIBOLD), after=6)
@@ -581,8 +583,24 @@ def form(title: str, text: str, fields: list[FormField], buttons: tuple[str, ...
         caption = ui.label(item.label, 13, color=ui.SECONDARY_TEXT)
         caption.setAlignment_(2)
         ui.constrain(caption, width=label_width)
-        field = _field(item.value, NSMakeRect(0, 0, field_width, 24), item.placeholder, item.secure)
-        ui.constrain(field, width=field_width)
+        if item.choices:
+            names = [name for name, _ in item.choices]
+            field = NSSegmentedControl.segmentedControlWithLabels_trackingMode_target_action_(
+                [label for _, label in item.choices], NSSegmentSwitchTrackingSelectOne, None, None
+            )
+            field.setSelectedSegment_(names.index(item.value) if item.value in names else 0)
+            field.setIdentifier_(item.name)
+            choices[item.name] = names
+        else:
+            height = 24 if item.lines <= 1 else item.lines * 17 + 7
+            field = _field(item.value, NSMakeRect(0, 0, field_width, height), item.placeholder, item.secure)
+            if item.lines > 1:
+                field.setUsesSingleLineMode_(False)
+                field.cell().setWraps_(True)
+                field.cell().setScrollable_(False)
+                ui.constrain(field, width=field_width, height=height)
+            else:
+                ui.constrain(field, width=field_width)
         card.add(ui.row(caption, field, spacing=12), after=6)
         inputs[item.name] = field
     for current, following in zip(list(inputs.values()), list(inputs.values())[1:]):
@@ -593,7 +611,10 @@ def form(title: str, text: str, fields: list[FormField], buttons: tuple[str, ...
     button = card.run()
     if button == len(buttons) - 1 or button == TIMED_OUT:
         return None
-    return {name: field.stringValue() for name, field in inputs.items()}
+    return {
+        name: choices[name][field.selectedSegment()] if name in choices else field.stringValue()
+        for name, field in inputs.items()
+    }
 
 
 # -- dagoverzicht -------------------------------------------------------------

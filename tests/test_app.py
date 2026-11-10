@@ -695,6 +695,24 @@ class OpenTicketTest(TrackingAppCase):
         self.app.hotkey.unregister.assert_any_call(app_module.OPEN_SHORTCUT)
         self.assertEqual("Open IN-1 in Jira", self.item().title)
 
+    def test_settings_offer_the_worklog_split_as_a_switch_and_save_the_choice(self):
+        seen = {}
+
+        def fake_form(title, text, fields, **kwargs):
+            seen["field"] = next(field for field in fields if field.name == "worklog_split")
+            values = {field.name: field.value for field in fields}
+            values["worklog_split"] = "period"
+            return values
+
+        with mock.patch.object(app_module.dialogs, "form", side_effect=fake_form), \
+             mock.patch.object(app_module, "save_config"), \
+             mock.patch.object(self.app, "_test_connection"), \
+             mock.patch.object(self.app, "_register_shortcut"):
+            self.app._settings()
+        self.assertEqual((("ticket", "Per ticket"), ("period", "Per period")), seen["field"].choices)
+        self.assertEqual("ticket", seen["field"].value)
+        self.assertEqual("period", self.app.config.worklog_split)
+
     def test_settings_refuse_the_same_combination_twice(self):
         forms, messages = [], []
 

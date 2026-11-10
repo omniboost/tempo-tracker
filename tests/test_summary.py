@@ -135,6 +135,12 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_fixed_options("Meetings=geen-key")
 
+    def test_fixed_options_can_also_be_separated_by_new_lines(self):
+        self.assertEqual(
+            parse_fixed_options("Meetings=IN-100, Support"),
+            parse_fixed_options("Meetings=IN-100\nSupport\n"),
+        )
+
     def test_parses_clock(self):
         self.assertEqual((18, 0), parse_clock("18:00"))
         self.assertEqual((9, 5), parse_clock("9.05"))

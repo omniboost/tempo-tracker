@@ -91,9 +91,12 @@ def parse_clock(value: str) -> tuple[int, int]:
 
 
 def parse_fixed_options(value: str) -> list[dict]:
-    """'Meetings=IN-100, Support, Overig=IN-7' -> [{'label': 'Meetings', 'issue_key': 'IN-100'}, ...]."""
+    """'Meetings=IN-100, Support, Overig=IN-7' -> [{'label': 'Meetings', 'issue_key': 'IN-100'}, ...].
+
+    A new line separates options too, like a comma.
+    """
     options = []
-    for part in value.split(","):
+    for part in re.split(r"[,\n]", value):
         part = part.strip()
         if not part:
             continue

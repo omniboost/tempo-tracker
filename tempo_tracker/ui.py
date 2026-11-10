@@ -51,6 +51,8 @@ from AppKit import (
     NSUserInterfaceLayoutOrientationHorizontal,
     NSUserInterfaceLayoutOrientationVertical,
     NSView,
+    NSViewMinXMargin,
+    NSViewWidthSizable,
     NSWindowAnimationBehaviorNone,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -620,6 +622,11 @@ class MenuHeader(NSView):
         self.progress.setFrame_(NSMakeRect(16, 74, self.WIDTH - 32, 6))
         for view in (self.dot, self.ticket, self.detail, self.today, self.total, self.progress):
             self.addSubview_(view)
+        # The menu is as wide as its widest item; stretch along so the bar and total reach the right edge.
+        self.setAutoresizingMask_(NSViewWidthSizable)
+        for view in (self.ticket, self.detail, self.progress):
+            view.setAutoresizingMask_(NSViewWidthSizable)
+        self.total.setAutoresizingMask_(NSViewMinXMargin)
         return self
 
     def isFlipped(self):

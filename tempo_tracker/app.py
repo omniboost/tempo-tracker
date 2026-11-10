@@ -1389,7 +1389,7 @@ class TempoTrackerApp(rumps.App):
             "app Jira, scopes read:jira-work and read:jira-user.\n"
             "Tempo token: Tempo → Settings → API Integration → New Token, "
             "Custom access: Worklogs View + Manage.\n"
-            "Fixed options: 'Name=JIRA-KEY', separated by commas.\n"
+            "Fixed options: 'Name=JIRA-KEY', separated by commas or new lines (⌥⏎).\n"
             "Git: on a checkout of a branch with a ticket key (e.g. feature/IN-123-…) the app asks to switch (ask), "
             "switches by itself (auto) or does nothing (off). Commit messages become the worklog description.\n"
             "Work days: on other days the app doesn't ask anything by itself (e.g. mon-fri, or mon-thu).\n"
@@ -1411,11 +1411,11 @@ class TempoTrackerApp(rumps.App):
                     FormField("work_days", "Work days", values["work_days"], "mon-fri"),
                     FormField("end_of_day", "Day overview at", values["end_of_day"], "18:00"),
                     FormField("round_minutes", "Round to (min)", values["round_minutes"], "15 · 0 = off"),
-                    FormField("worklog_split", "Tempo worklogs", values["worklog_split"], "ticket (one per day) or period"),
+                    FormField("worklog_split", "Tempo worklogs", values["worklog_split"], choices=(("ticket", "Per ticket"), ("period", "Per period"))),
                     FormField("day_target", "Hours per day", values["day_target"], "8:00 · empty = don't show"),
                     FormField("week_reminder", "Week check", values["week_reminder"], "fri 15:00 · empty = off"),
                     FormField("call_min_minutes", "Ask about calls from (min)", values["call_min_minutes"], "5 · 0 = off"),
-                    FormField("fixed_options", "Fixed options", values["fixed_options"], "Meetings=IN-100, Support, Other", section="Tickets"),
+                    FormField("fixed_options", "Fixed options", values["fixed_options"], "Meetings=IN-100, Support, Other", section="Tickets", lines=4),
                     FormField("git_folders", "Git folders", values["git_folders"], "~/Projects · empty = off"),
                     FormField("branch_switch", "On branch switch", values["branch_switch"], "ask, auto or off"),
                     FormField("shortcut", "Shortcut", values["shortcut"], "ctrl+alt+t · empty = off"),
